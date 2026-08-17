@@ -155,23 +155,25 @@ def _state_for_origin(train: pl.DataFrame, origin: dt.date) -> dict:
     return _cache[origin]
 
 
-def quantile_predict_band(
-    train: pl.DataFrame, origin: dt.date, horizon: int, conformal: bool = True
-) -> pl.DataFrame:
-    """commodity, centre, p10, p50, p90 -- the full band, conformally
-    widened by default. Not the predict_fn shape harness.run_backtest
-    wants; see quantile_median_predict for that.
-
-    conformal=False returns the raw quantile-model band, which is what the
-    before/after coverage comparison in PROGRESS.md is measured against."""
+def fitted_for(train: pl.DataFrame, origin: dt.date, horizon: int) -> dict:
+    """The fitted quantile models + conformal corrections for this
+    (origin, horizon), fitting and caching on first use. Public so callers
+    that need to score rows other than the origin row (e.g. the dashboard
+    artifact builder, which scores each centre at its own latest reading)
+    can reuse the same fit."""
     state = _state_for_origin(train, origin)
     if horizon not in state["models"]:
         state["models"][horizon] = _fit_quantiles(state["engineered"], horizon)
-    fitted = state["models"][horizon]
-    models = fitted["models"]
+    return state["models"][horizon]
 
-    today = state["engineered"].filter(pl.col("date") == origin)
-    if today.height == 0:
+
+def band_from_fitted(
+    fitted: dict, rows: pl.DataFrame, conformal: bool = True
+) -> pl.DataFrame:
+    """Applies an already-fitted quantile set to an arbitrary engineered
+    feature frame -> commodity, centre, p10, p50, p90 (monotonic, and
+    conformally widened unless conformal=False)."""
+    if rows.height == 0:
         return pl.DataFrame(
             schema={
                 "commodity": pl.String,
@@ -182,10 +184,11 @@ def quantile_predict_band(
             }
         )
 
-    X = to_model_frame(today)
+    models = fitted["models"]
+    X = to_model_frame(rows)
     preds = {a: models[a].predict(X) for a in ALPHAS}
 
-    band = today.select(["commodity", "centre"]).with_columns(
+    band = rows.select(["commodity", "centre"]).with_columns(
         p10=pl.Series(preds[LOW_ALPHA]),
         p50=pl.Series(preds[0.5]),
         p90=pl.Series(preds[HIGH_ALPHA]),
@@ -204,6 +207,20 @@ def quantile_predict_band(
     return band.with_columns(
         p10=pl.col("p10") - pl.Series(q), p90=pl.col("p90") + pl.Series(q)
     )
+
+
+def quantile_predict_band(
+    train: pl.DataFrame, origin: dt.date, horizon: int, conformal: bool = True
+) -> pl.DataFrame:
+    """commodity, centre, p10, p50, p90 -- the full band, conformally
+    widened by default. Not the predict_fn shape harness.run_backtest
+    wants; see quantile_median_predict for that.
+
+    conformal=False returns the raw quantile-model band, which is what the
+    before/after coverage comparison in PROGRESS.md is measured against."""
+    fitted = fitted_for(train, origin, horizon)
+    today = _cache[origin]["engineered"].filter(pl.col("date") == origin)
+    return band_from_fitted(fitted, today, conformal=conformal)
 
 
 def quantile_median_predict(train: pl.DataFrame, origin: dt.date, horizon: int) -> pl.DataFrame:

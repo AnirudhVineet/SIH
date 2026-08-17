@@ -60,17 +60,34 @@ def _state_for_origin(train: pl.DataFrame, origin: dt.date) -> dict:
     return _cache[origin]
 
 
-def lgbm_predict(train: pl.DataFrame, origin: dt.date, horizon: int) -> pl.DataFrame:
+def fitted_for(train: pl.DataFrame, origin: dt.date, horizon: int) -> lgb.LGBMRegressor:
+    """The fitted point model for this (origin, horizon), fitting and
+    caching on first use. Public so callers that need to score rows other
+    than the origin row (e.g. the dashboard artifact builder) and callers
+    that need the model itself (SHAP) can reuse the same fit."""
     state = _state_for_origin(train, origin)
     if horizon not in state["models"]:
         state["models"][horizon] = _fit_for_horizon(state["engineered"], horizon)
-    model = state["models"][horizon]
+    return state["models"][horizon]
 
-    today = state["engineered"].filter(pl.col("date") == origin)
-    if today.height == 0:
+
+def engineered_for(train: pl.DataFrame, origin: dt.date) -> pl.DataFrame:
+    """The cached engineered feature frame for this origin."""
+    return _state_for_origin(train, origin)["engineered"]
+
+
+def predict_with(model: lgb.LGBMRegressor, rows: pl.DataFrame) -> pl.DataFrame:
+    """Applies an already-fitted point model to an arbitrary engineered
+    feature frame -> commodity, centre, pred."""
+    if rows.height == 0:
         return pl.DataFrame(
             schema={"commodity": pl.String, "centre": pl.String, "pred": pl.Float64}
         )
+    preds = model.predict(to_model_frame(rows))
+    return rows.select(["commodity", "centre"]).with_columns(pred=pl.Series(preds))
 
-    preds = model.predict(to_model_frame(today))
-    return today.select(["commodity", "centre"]).with_columns(pred=pl.Series(preds))
+
+def lgbm_predict(train: pl.DataFrame, origin: dt.date, horizon: int) -> pl.DataFrame:
+    model = fitted_for(train, origin, horizon)
+    today = engineered_for(train, origin).filter(pl.col("date") == origin)
+    return predict_with(model, today)

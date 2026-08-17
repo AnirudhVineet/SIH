@@ -1,0 +1,26 @@
+{
+  "as_of": "2025-11-05",
+  "generated_at": "2026-08-17T09:38:30",
+  "horizons": [
+    7,
+    14
+  ],
+  "target": "wholesale_price",
+  "price_units": "INR per quintal (100 kg), wholesale mandi modal price",
+  "spike_threshold_pct": 8.0,
+  "spike_window_days": 14,
+  "spike_decision_threshold": 0.3,
+  "conformal_calibration_window_days": 180,
+  "stress_weights": {
+    "forecast": 0.45,
+    "spike": 0.35,
+    "uncertainty": 0.2
+  },
+  "n_centres": 10,
+  "n_commodities": 3,
+  "data_span": [
+    "2015-01-01",
+    "2025-11-05"
+  ],
+  "source": "Agmarknet daily mandi prices (Kaggle mirror) + Open-Meteo archive"
+}
