@@ -1,6 +1,6 @@
 {
   "as_of": "2025-11-05",
-  "generated_at": "2026-08-17T11:31:54",
+  "generated_at": "2026-08-17T18:43:51",
   "horizons": [
     7,
     14
@@ -19,6 +19,11 @@
   "stress_full_scale": {
     "level_vs_1yr_median": 0.25,
     "band_width_pct_of_price": 0.6
+  },
+  "procurement_full_scale": {
+    "discount_vs_1yr_median": 0.12,
+    "harvest_window_months": 3.0,
+    "off_season_discount_ceiling": 0.15
   },
   "n_centres": 10,
   "n_commodities": 3,

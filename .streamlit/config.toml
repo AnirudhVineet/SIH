@@ -11,3 +11,9 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# "auto" only hides the Deploy button on Streamlit Community Cloud -- it has
+# no way to detect a Docker/HF Spaces deployment, so without this the Deploy
+# button and hamburger menu would still show in front of the judges.
+toolbarMode = "minimal"

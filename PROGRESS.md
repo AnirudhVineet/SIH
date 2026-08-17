@@ -463,3 +463,74 @@ Not touching Phase 3/4 or ingest.
   breach (the classifier's actual target), vs median 88 days of runway
   before the peak (the operationally useful figure). Stated caveats: Lucknow
   fired one day *after* its breach, and crisis-window precision was 52%.
+
+## 2026-08-17 — Phase 4 gap closure: procurement flag, release date, what-if price path
+
+Audited Phase 4 against CLAUDE.md and found three things the spec asks for
+that the first pass didn't have: a procurement/buy-side flag, a release date
+on the optimizer table, and a counterfactual price path for the what-if
+slider (the spec calls this last one "the demo climax"). Closed all three.
+
+- **Procurement (buy-side) signal** (`decide/procurement.py`, new). Scores
+  0-100 per (commodity, centre): price discount vs the centre's own trailing
+  1-year median (reuses `stress.trailing_median` -- release and procurement
+  now share one definition of "normal") x harvest proximity
+  (`months_since_harvest`, a real Phase 1 feature). **Multiplicative, not
+  additive** -- an additive first draft let a large discount alone clear the
+  "Open" threshold ten months from harvest, which is a demand/oversupply
+  signal, not a harvest low. Multiplying caps an off-season discount at 15%
+  of the full score. Wired into `build_dashboard_artifacts.py` (writes
+  `app/data/procurement.parquet`, reusing the same trailing medians `build_
+  stress` already computes) and a new "Procurement -- rebuild the buffer"
+  section on the Action screen.
+
+  **Real finding from running it, not a bug**: as of the current data
+  snapshot (2025-11-05) every one of the 3 tracked commodities is genuinely
+  off-season under this repo's single-annual-harvest calendar (onion
+  harvests April, tur January, potato February -- inferred by checking which
+  calendar month `months_since_harvest` resets to 0 for each commodity).
+  Nearest harvest is tur in ~2 months. The panel says so rather than forcing
+  a false "Open" flag, and shows months-to-next-harvest per commodity so the
+  screen isn't just an empty table.
+
+- **Release date**: added a "days until dispatch" slider (0-14, default 3)
+  on the Action screen; `release_date = as_of + lead_time` feeds both the
+  displayed release-date tile and the PDF's section 4 caption. This was the
+  other missing column from CLAUDE.md's example release table (`state,
+  quantity, release date, expected price impact`).
+
+- **What-if counterfactual price path** (`decide/whatif.py`, new) --
+  CLAUDE.md: "sliders for quantity, state, and timing... show the
+  counterfactual price path bending against the do-nothing baseline." No
+  source this project ingests has a historical log of past releases, so
+  there is nothing to fit a price-elasticity-of-release against -- this is
+  therefore an **explicit, labelled illustrative assumption**, not a
+  calibrated estimate, same convention as `decide/reference_data.py`'s
+  capacity/transport labels. Do-nothing baseline is a straight-line
+  interpolation through the three *real* forecast points (today, 7d P50,
+  14d P50); the with-release line multiplies that down by
+  `MAX_IMPACT_PCT=6% x (release/capacity) x ramp(days since dispatch)`,
+  labelled in-UI as illustrative every place it's shown. Quantity defaults
+  to the LP's own allocation for the selected centre (editable), state is
+  the existing centre selector, timing is the release-date slider above --
+  all three sliders CLAUDE.md asks for. Verified live in a browser: dragging
+  quantity visibly bends the accent line away from the dashed baseline,
+  more so past the dispatch marker.
+
+- **Found and fixed a real, pre-existing PDF rendering bug while testing
+  this**: the officer-facing sentence in the PDF (section 1) was rendering
+  the rupee glyph as black boxes -- `report.py`'s static labels were already
+  made ASCII for this exact reason (PDF base-14 fonts lack U+20B9), but the
+  per-forecast sentence pulled from `sentences.parquet` was never routed
+  through that fix. Now stripped to `Rs ` on the PDF path only; the
+  dashboard's HTML rendering keeps the real ₹ symbol.
+
+- **Verified with a real browser (Playwright), not assumed**: launched the
+  Streamlit app, clicked into all 5 screens (no exceptions on any), dragged
+  the new what-if sliders and confirmed the chart bends, downloaded the PDF
+  and confirmed sections 1-6 render with no black boxes, and separately
+  exercised the PDF's "Open" procurement-window branch and the empty-plan
+  branch with synthetic inputs (neither is hit by the current data
+  snapshot, so browser-clicking alone wouldn't have covered them).
+  `python -m pytest models/tests/` still 30/30 after the changes (none of
+  them touch Phase 2 code, but re-ran to confirm).

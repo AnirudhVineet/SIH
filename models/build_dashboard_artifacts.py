@@ -40,6 +40,7 @@ from features import CATEGORICAL_COLUMNS, MODEL_COLUMNS, build_features, to_mode
 
 sys.path.insert(0, str(h.ROOT / "decide"))
 import stress as stress_mod  # noqa: E402
+import procurement as procurement_mod  # noqa: E402
 
 OUT_DIR = h.ROOT / "app" / "data"
 HISTORY_DAYS = 400  # how much history the commodity chart shows
@@ -140,6 +141,7 @@ def build_forecasts(frame: pl.DataFrame, origin: dt.date) -> tuple[pl.DataFrame,
             pl.col(h.TARGET).alias("current_price"),
             pl.col("date").alias("as_of_date"),
             "staleness_days",
+            "months_since_harvest",
         ]
     )
 
@@ -398,7 +400,7 @@ def build_spike_probabilities(frame: pl.DataFrame, origin: dt.date) -> pl.DataFr
 
 def build_stress(
     forecasts: pl.DataFrame, frame: pl.DataFrame, origin: dt.date
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Price Stress Index per (commodity, centre), plus a state-level roll-up
     for the map. Scoring lives in decide/stress.py -- see that module for the
     component definitions and weights.
@@ -408,6 +410,11 @@ def build_stress(
     null), arrivals decline needs an arrivals series (absent from the source
     entirely, verified against all 12 raw yearly files), and stock cover ratio
     needs a stock feed. Those three are omitted rather than mocked.
+
+    Also returns the trailing medians used as the baseline, so
+    build_procurement can score against the exact same "normal" rather than
+    recomputing it -- the buy-side and sell-side signals must agree on what a
+    centre's normal price is.
     """
     medians = stress_mod.trailing_median(frame, origin)
     per_centre = stress_mod.score(forecasts.filter(pl.col("horizon") == 14), medians)
@@ -425,7 +432,20 @@ def build_stress(
         )
         .sort(["state", "commodity"])
     )
-    return per_centre, by_state
+    return per_centre, by_state, medians
+
+
+def build_procurement(
+    forecasts: pl.DataFrame, medians: pl.DataFrame
+) -> pl.DataFrame:
+    """Procurement (buy-side) score per (commodity, centre) -- the other half
+    of the PSF cycle. Scoring lives in decide/procurement.py; see that module
+    for the component definitions. Reuses the same trailing-median baseline
+    as the sell-side stress score (`medians`, computed once in build_stress)
+    so the two halves cannot disagree about what "normal" is for a centre.
+    """
+    per_centre = procurement_mod.score(forecasts.filter(pl.col("horizon") == 14), medians)
+    return procurement_mod.add_band(per_centre)
 
 
 def main() -> None:
@@ -451,11 +471,14 @@ def main() -> None:
     )
     forecasts = forecasts.join(states, on="centre", how="left")
 
-    stress_by_centre, stress = build_stress(forecasts, frame, origin)
+    stress_by_centre, stress, medians = build_stress(forecasts, frame, origin)
     print(
         f"  stress index: {stress_by_centre.height} (commodity, centre) rows"
         f" -> {stress.height} (state, commodity) rows"
     )
+
+    procurement = build_procurement(forecasts, medians)
+    print(f"  procurement score: {procurement.height} (commodity, centre) rows")
 
     history = frame.filter(
         pl.col("date") > origin - dt.timedelta(days=HISTORY_DAYS)
@@ -469,6 +492,7 @@ def main() -> None:
     sentences.write_parquet(OUT_DIR / "sentences.parquet")
     stress.write_parquet(OUT_DIR / "stress.parquet")
     stress_by_centre.write_parquet(OUT_DIR / "stress_by_centre.parquet")
+    procurement.write_parquet(OUT_DIR / "procurement.parquet")
     history.write_parquet(OUT_DIR / "history.parquet")
 
     meta = {
@@ -489,6 +513,11 @@ def main() -> None:
         "stress_full_scale": {
             "level_vs_1yr_median": stress_mod.LEVEL_FULL_SCALE,
             "band_width_pct_of_price": stress_mod.BAND_FULL_SCALE,
+        },
+        "procurement_full_scale": {
+            "discount_vs_1yr_median": procurement_mod.DISCOUNT_FULL_SCALE,
+            "harvest_window_months": procurement_mod.HARVEST_FULL_WINDOW_MONTHS,
+            "off_season_discount_ceiling": procurement_mod.HARVEST_FLOOR,
         },
         "n_centres": int(frame["centre"].n_unique()),
         "n_commodities": int(frame["commodity"].n_unique()),

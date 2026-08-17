@@ -1,0 +1,13 @@
+# Runtime-only dependencies for serving the dashboard on Streamlit Community
+# Cloud. Placed alongside app/dashboard.py (the entrypoint) so Streamlit Cloud
+# picks this lean file instead of the root requirements.txt, which pulls in
+# the modelling stack (lightgbm/shap/statsmodels/scikit-learn) needed only to
+# regenerate artifacts, not to serve them.
+streamlit==1.61.1
+polars==1.37.1
+plotly==6.7.0
+pyarrow==24.0.0
+pandas==2.3.3
+numpy==1.26.4
+PuLP==3.3.0
+reportlab==4.5.1

@@ -92,6 +92,8 @@ def build_brief(
     sentence: str,
     stress_rows: list[dict],
     plan,
+    release_date: dt.date | None,
+    procurement_rows: list[dict],
     spike_metrics: dict,
     accuracy: dict | None,
     input_labels: dict,
@@ -119,8 +121,12 @@ def build_brief(
     )
 
     # 1 — assessment
+    # sentence comes from app/data/sentences.parquet, built for the dashboard's
+    # HTML rendering (real rupee glyph). ReportLab's base-14 fonts don't carry
+    # U+20B9 -- same issue the LABELS dict already routes around -- so it is
+    # swapped for the ASCII form only on this PDF path.
     story.append(Paragraph("1. Assessment", S["h2"]))
-    story.append(Paragraph(sentence, S["body"]))
+    story.append(Paragraph(sentence.replace("₹", "Rs "), S["body"]))
 
     if forecast:
         story.append(Spacer(1, 5))
@@ -194,9 +200,12 @@ def build_brief(
             ("LINEABOVE", (0, -1), (-1, -1), 0.7, ACCENT),
         ]))
         story.append(t)
+        release_when = (
+            f"Proposed release date: {release_date:%d %b %Y}. " if release_date else ""
+        )
         story.append(
             Paragraph(
-                f"Linear program over centres scoring >= 30 stress, "
+                f"{release_when}Linear program over centres scoring >= 30 stress, "
                 f"available stock {plan.available_stock:,.0f} t, solver status "
                 f"{plan.status}.",
                 S["small"],
@@ -211,7 +220,39 @@ def build_brief(
             )
         )
 
-    # 5 — caveats, on the page not just on screen
+    # 5 — procurement (buy-side)
+    story.append(Paragraph("5. Procurement — rebuild the buffer", S["h2"]))
+    open_rows = [r for r in procurement_rows if r.get("band") == "Open"]
+    if open_rows:
+        prows = [["Centre", "State", "Score", "Months to next harvest"]]
+        for r in open_rows:
+            prows.append([
+                r["centre"], r.get("state") or "-",
+                f"{r['procurement_score']:.0f}",
+                f"{r.get('months_to_next_harvest', '-')}",
+            ])
+        story.append(_table(prows, [34 * mm, 46 * mm, 20 * mm, 50 * mm], align_right=[2]))
+        story.append(
+            Paragraph(
+                "Harvest-driven price lows worth buying into to rebuild the buffer, "
+                "scored from the same trailing-median baseline as the stress index.",
+                S["small"],
+            )
+        )
+    else:
+        months_out = min(
+            (r.get("months_to_next_harvest", 99) for r in procurement_rows), default=None
+        )
+        story.append(
+            Paragraph(
+                "No centre is currently in a harvest-driven procurement window for "
+                f"{commodity}."
+                + (f" Nearest harvest in ~{months_out} month(s)." if months_out is not None else ""),
+                S["body"],
+            )
+        )
+
+    # 6 — caveats, on the page not just on screen
     story.append(Spacer(1, 7))
     caveat = Table(
         [[Paragraph(

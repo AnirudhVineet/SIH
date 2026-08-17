@@ -36,7 +36,10 @@ MODELS = ROOT / "models"
 
 sys.path.insert(0, str(ROOT / "decide"))
 import optimizer as OPT  # noqa: E402
+import procurement as PROC  # noqa: E402
+import reference_data as REF  # noqa: E402
 import report as REPORT  # noqa: E402
+import whatif as WHATIF  # noqa: E402
 
 # The GeoJSON names Delhi "Delhi"; our price data calls the state "NCT of
 # Delhi". Every other state name matches exactly.
@@ -62,6 +65,7 @@ def load() -> dict:
         "sentences": pl.read_parquet(DATA / "sentences.parquet"),
         "stress": pl.read_parquet(DATA / "stress.parquet"),
         "stress_by_centre": pl.read_parquet(DATA / "stress_by_centre.parquet"),
+        "procurement": pl.read_parquet(DATA / "procurement.parquet"),
         "history": pl.read_parquet(DATA / "history.parquet"),
         "meta": json.loads((DATA / "meta.json").read_text()),
         "backtest": pl.read_csv(MODELS / "backtest_results.csv"),
@@ -141,10 +145,14 @@ with st.sidebar:
 
 
 def selected_forecast() -> dict | None:
+    return selected_forecast_for(horizon)
+
+
+def selected_forecast_for(h: int) -> dict | None:
     rows = D["forecasts"].filter(
         (pl.col("commodity") == commodity)
         & (pl.col("centre") == centre)
-        & (pl.col("horizon") == horizon)
+        & (pl.col("horizon") == h)
     )
     return rows.to_dicts()[0] if rows.height else None
 
@@ -590,7 +598,7 @@ files). Every driver shown is real; the set is not complete.
 # --------------------------------------------------------------- 4. action
 
 
-def _pdf_export(plan) -> None:
+def _pdf_export(plan, release_date: dt.date, procurement_rows: list[dict]) -> None:
     """One-page officer brief. Built on demand so the PDF always matches the
     slider position currently on screen."""
     f = selected_forecast()
@@ -623,6 +631,8 @@ def _pdf_export(plan) -> None:
         sentence=sentence_rows[0] if sentence_rows else "No forecast available.",
         stress_rows=stress_rows,
         plan=plan,
+        release_date=release_date,
+        procurement_rows=procurement_rows,
         spike_metrics=spike_metrics,
         accuracy=accuracy[0] if accuracy else None,
         input_labels=OPT.INPUT_LABELS,
@@ -781,14 +791,166 @@ state figure would let the LP spend that state's capacity twice.
 Centres scoring below {OPT.MIN_STRESS_TO_QUALIFY:.0f} are excluded outright.
 Solver status: `{plan.status}`.
 
-To make this a procurement-grade tool, three feeds are needed: NAFED/NCCF stock
-positions, real state absorption capacity, and tendered freight rates.
+To make this an operationally deployable tool, three feeds are needed:
+NAFED/NCCF stock positions, real state absorption capacity, and tendered
+freight rates.
+            """
+        )
+
+    st.divider()
+    st.markdown("##### What-if: price-path preview")
+    st.caption(
+        f"{centre} · quantity, dispatch timing and the resulting bend against "
+        "the do-nothing forecast — illustrative, see note below"
+    )
+
+    lp_qty_for_centre = next(
+        (r["release_tonnes"] for r in plan.rows if r["centre"] == centre), 0.0
+    )
+    state_for_centre = next(
+        (r["state"] for r in stress_rows if r["centre"] == centre), None
+    )
+    capacity_for_centre = REF.absorption_capacity_tonnes(state_for_centre)
+
+    wc1, wc2, wc3 = st.columns([1.3, 1, 1])
+    with wc1:
+        preview_qty = st.slider(
+            f"Preview quantity to release into {centre} (t)",
+            min_value=0,
+            max_value=int(capacity_for_centre),
+            value=int(min(lp_qty_for_centre, capacity_for_centre)),
+            step=max(1, int(capacity_for_centre) // 50),
+            help="Defaults to this centre's allocation from the optimizer above; "
+                 "drag to explore other quantities.",
+        )
+    with wc2:
+        lead_days = st.slider(
+            "Days until dispatch", min_value=0, max_value=14, value=3, step=1,
+            help="Also sets the release date shown in the table above and in the PDF.",
+        )
+    release_date = dt.date.fromisoformat(META["as_of"]) + dt.timedelta(days=lead_days)
+    with wc3:
+        st.markdown(
+            tile("Planned release date", f"{release_date:%d %b %Y}", f"{lead_days}d lead time"),
+            unsafe_allow_html=True,
+        )
+
+    f7 = selected_forecast_for(7)
+    f14 = selected_forecast_for(14)
+    if f7 and f14:
+        path = WHATIF.price_path(
+            current_price=f14["current_price"],
+            p50_7d=f7["p50"],
+            p50_14d=f14["p50"],
+            release_tonnes=preview_qty,
+            capacity_tonnes=capacity_for_centre,
+            release_day=lead_days,
+        )
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=path.days, y=path.baseline, mode="lines", name="Do-nothing (forecast)",
+            line=dict(color=T.TEXT_MUTED, width=2, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=path.days, y=path.with_release, mode="lines", name="With release",
+            line=dict(color=T.ACCENT, width=2.5),
+        ))
+        fig.add_vline(x=lead_days, line_width=1, line_color=T.TEXT_MUTED, line_dash="dot")
+        fig.add_annotation(
+            x=lead_days, y=1, yref="paper", yanchor="bottom", text="Dispatch",
+            showarrow=False, font=dict(size=11, color=T.TEXT_MUTED),
+        )
+        fig.update_xaxes(title_text="Days from now")
+        fig.update_yaxes(title_text="₹ per quintal")
+        T.style_fig(fig, height=340)
+        st.plotly_chart(fig, use_container_width=True)
+
+        delta_pct = (path.with_release[-1] / path.baseline[-1] - 1) * 100
+        fill_pct = 100 * preview_qty / capacity_for_centre if capacity_for_centre else 0
+        st.markdown(
+            f'<div class="caveat"><b>Illustrative, not calibrated.</b> No source this '
+            "project ingests contains a historical log of past buffer-stock releases, "
+            "so there is no data to fit a price-elasticity-of-release against. This "
+            f"assumes releasing {preview_qty:,.0f} t (~{fill_pct:.0f}% of {centre}'s "
+            f"estimated absorption capacity) shaves up to {WHATIF.MAX_IMPACT_PCT:.0f}% off "
+            f"the price, ramping in over {WHATIF.RAMP_DAYS} days from the dispatch date — "
+            f"day 14 moves {delta_pct:+.1f}% vs do-nothing. It shows the intended "
+            "<i>shape</i> of the effect, not a rupee forecast.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info(f"No 7-day/14-day forecast available for {commodity} in {centre}.")
+
+    st.divider()
+    st.markdown("##### Procurement — rebuild the buffer")
+    st.caption(
+        "The other half of the PSF cycle: flag harvest-driven price lows worth "
+        "buying into, not just spikes worth releasing against."
+    )
+
+    proc_rows = (
+        D["procurement"]
+        .filter(pl.col("commodity") == commodity)
+        .sort("procurement_score", descending=True)
+    )
+    n_open = proc_rows.filter(pl.col("band") == "Open").height
+    if n_open:
+        st.success(
+            f"{n_open} centre(s) in an open harvest-driven procurement window for "
+            f"{commodity}."
+        )
+    else:
+        months_out = proc_rows["months_to_next_harvest"].min()
+        st.info(
+            f"No centre is currently in a harvest-driven procurement window for "
+            f"{commodity}. Nearest harvest in ~{months_out} month(s)."
+        )
+
+    st.dataframe(
+        proc_rows.select(
+            pl.col("centre").alias("Centre"),
+            pl.col("state").alias("State"),
+            pl.col("current_price").round(0).alias("Current (₹)"),
+            pl.col("median_1yr").round(0).alias("1yr median (₹)"),
+            pl.col("months_since_harvest").alias("Months since harvest"),
+            pl.col("months_to_next_harvest").alias("Months to next harvest"),
+            pl.col("procurement_score").alias("Score"),
+            pl.col("band").alias("Status"),
+        ).to_pandas(),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Score": st.column_config.ProgressColumn(
+                "Score", min_value=0, max_value=100, format="%.0f"
+            ),
+        },
+    )
+    with st.expander("How the procurement score works"):
+        st.markdown(
+            f"""
+```
+score = 100 x discount x ({PROC.HARVEST_FLOOR:.2f} + {1 - PROC.HARVEST_FLOOR:.2f} x harvest)
+```
+
+`discount` is current price vs this centre's own trailing 1-year median
+(saturates at a {PROC.DISCOUNT_FULL_SCALE:.0%} discount) — the same baseline
+`decide/stress.py` uses for the sell-side score, so the two signals cannot
+disagree about what "normal" is for a centre. `harvest` is how close the
+centre is to `months_since_harvest = 0`, decaying to 0 by
+{PROC.HARVEST_FULL_WINDOW_MONTHS:.0f} months out.
+
+The two are **multiplied**, not averaged: a large discount far from harvest
+is capped at {PROC.HARVEST_FLOOR:.0%} of the full score (worth a look, but
+not flagged "Open") — it takes both a real discount and genuine harvest
+proximity together to open the window. `months_since_harvest` is a real
+Phase 1 feature (harvest-calendar-derived); there is no buffer-stock
+inventory feed, so this flags a *window*, not a specific quantity to buy.
             """
         )
 
     st.divider()
     st.markdown("##### Export")
-    _pdf_export(plan)
+    _pdf_export(plan, release_date, proc_rows.to_dicts())
 
     st.divider()
     st.markdown("##### Backtested spike early-warning performance")
