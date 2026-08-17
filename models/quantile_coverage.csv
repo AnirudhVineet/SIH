@@ -1,0 +1,7 @@
+commodity,horizon,n,raw_coverage,conformal_coverage,raw_width,conformal_width
+onion,7,149,0.631,0.711,805.0,894.0
+onion,14,134,0.672,0.784,964.0,1134.0
+potato,7,157,0.745,0.739,494.0,476.0
+potato,14,159,0.792,0.799,630.0,608.0
+tur,7,123,0.715,0.813,1199.0,1517.0
+tur,14,116,0.655,0.845,1277.0,2013.0

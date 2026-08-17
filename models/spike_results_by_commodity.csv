@@ -1,0 +1,4 @@
+commodity,decision_threshold,precision,recall,f1,median_lead_days_per_alert,median_lead_days_per_episode,episode_recall,n_episodes,base_rate
+onion,0.3,0.5394,0.7328,0.6214,4.0,7.0,0.8533,225,0.4316
+potato,0.3,0.4992,0.9033,0.6431,5.0,9.0,0.9526,232,0.4012
+tur,0.3,0.3736,0.5309,0.4386,3.0,4.0,0.7603,121,0.1497

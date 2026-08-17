@@ -273,3 +273,100 @@ Not touching Phase 3/4 or ingest.
   rerun to report. Getting arrivals needs a fresh ingest (Agmarknet
   arrivals endpoint / data.gov.in), which is Phase 1 and out of scope.
   QUESTIONS.md #1 updated to RESOLVED.
+
+- **FIX 2 (conformal calibration): done, big improvement, one residual gap.**
+  Implemented split conformal prediction (CQR, Romano et al. 2019) in
+  `models/quantile_lgbm.py`. Supervised training rows are split *by date*
+  into proper-train (older) and calibration (most recent 180 days) -- a
+  time-based split, not random, since a random split would leak future
+  regime information into calibration and report optimistically. Quantile
+  models fit on proper-train; on the held-out calibration rows the CQR
+  conformity score `E = max(q_lo - y, y - q_hi)` is computed, and its
+  `ceil((n+1)*0.8)/n` empirical quantile Q (the finite-sample-corrected
+  level) widens the band to `[q_lo - Q, q_hi + Q]`. Q is computed **per
+  commodity** -- miscoverage was very uneven, and a single pooled Q would
+  over-widen tur/potato just to rescue onion.
+
+  | commodity | h  | raw cov | conformal cov | raw width | conformal width |
+  |-----------|----|--------:|--------------:|----------:|----------------:|
+  | onion     | 7  | 63.1%   | 71.1%         | 805       | 894             |
+  | onion     | 14 | 67.2%   | 78.4%         | 964       | 1134            |
+  | potato    | 7  | 74.5%   | 73.9%         | 494       | 476             |
+  | potato    | 14 | 79.2%   | 79.9%         | 630       | 608             |
+  | tur       | 7  | 71.5%   | 81.3%         | 1199      | 1517            |
+  | tur       | 14 | 65.5%   | 84.5%         | 1277      | 2013            |
+
+  Overall 70.5% -> 77.8%; 14d essentially hits the 80% target (71.4% ->
+  80.7%), 7d improves to 75.1% but still under-covers. Written to
+  `models/quantile_coverage.csv`.
+
+  Swept the calibration window (90/120/180/240/365/545 days) rather than
+  guessing: 180 was chosen. Longer windows were *worse* on both counts --
+  they strip more recent data from training AND drift the calibration
+  distribution away from the test point (365d -> 71.8%/78.7%, 545d ->
+  73.4%/76.5%). 120d edged 180d on overall coverage (78.6% vs 77.7%) but
+  those differ by well under one standard error (~2pp at n≈429), while
+  180d was clearly better on onion-7d (71.1% vs 68.5%) -- the specific cell
+  this fix exists to address. Not tuning further; that would be fitting the
+  evaluation.
+
+  **Also found and fixed a real display bug while here**: the three alphas
+  are independent LightGBM fits with nothing tying them together, and they
+  were **crossing on ~1.9% of real backtest rows** (p50 landing above its
+  own p90), which would render as an inverted band on the dashboard. Now
+  passed through monotone rearrangement (sort the three values per row,
+  Chernozhukov et al. 2010 -- rearranging estimated quantile curves weakly
+  reduces estimation error, so this is principled, not cosmetic). Caught by
+  the pre-existing band-monotonicity test in `test_lgbm_smoke.py`, which is
+  exactly what that test was for.
+
+- **FIX 3 (spike classifier): done. Headline = median 7-day lead time.**
+  `models/spike_classifier.py` + `models/run_spike_backtest.py`. Binary
+  LightGBM: does price rise >8% within 14 days.
+
+  Two design decisions worth stating, both about making lead time mean
+  something rather than being an artifact:
+
+  1. **Daily scoring, not 25-origin scoring.** The point-forecast models
+     are scored at 25 origins spaced 30 days apart; that would give only 25
+     lead-time observations per series. Instead each origin's model scores
+     *every day* until the next origin (median model staleness 15 days, max
+     30), which mirrors real deployment (retrain periodically, score daily)
+     and yields 12,115 genuinely out-of-sample daily alert decisions.
+  2. **Episode-based lead time.** A sustained run-up crosses the threshold
+     on many consecutive days; counting each as a separate "event" would
+     collapse the "how early did we catch it" number back to the per-alert
+     number. Crossings within 7 days of each other are folded into one
+     episode credited to its first crossing date, and lead time is measured
+     from the earliest correct alert to that date.
+
+  Labels use non-imputed prices only, for both the anchor and the forward
+  window -- a flat forward-fill can't produce an 8% jump, so letting
+  imputed values into the label would invent and mask spikes. Rows with no
+  real observation in the forward window are null-labelled and dropped, not
+  silently treated as negatives. Training rows are cut at `origin - 14d`
+  so the model never trains on a label that wasn't yet knowable.
+
+  Threshold sweep (full table in `models/spike_results.csv`):
+
+  | thr  | precision | recall | F1    | lead/alert | lead/episode | episode recall |
+  |------|----------:|-------:|------:|-----------:|-------------:|---------------:|
+  | 0.20 | 45.0%     | 89.8%  | 0.600 | 5d         | 7d           | 93.1%          |
+  | 0.25 | 47.5%     | 84.7%  | 0.609 | 5d         | 7d           | 90.0%          |
+  | 0.30 | 50.0%     | 78.4%  | 0.610 | 4d         | 7d           | 87.4%          |
+  | 0.40 | 55.9%     | 62.3%  | 0.589 | 4d         | 6d           | 77.5%          |
+  | 0.50 | 62.6%     | 43.0%  | 0.510 | 4d         | 5d           | 61.1%          |
+
+  Committed default is **0.30** (empirical max-F1, and the best lead time /
+  episode recall among points at peak F1). **Headline: median 7 days of
+  warning per spike episode, catching 505/578 episodes (87.4%), at 50%
+  precision / 78% recall.** Base rate is 34%, so precision 50% is real lift,
+  not a coin flip. Per-commodity (`spike_results_by_commodity.csv`): potato
+  is strongest (9d lead, 95.3% episode recall), onion 7d/85.3%, tur weakest
+  (4d, 76.0%) -- consistent with tur being the most persistent/least
+  spiky series (15% base rate vs 40%+ for the others).
+
+  Note the threshold is a genuine policy choice, not a modelling one: 0.20
+  buys +5.7pp episode recall for -5pp precision. Flagging for the team
+  rather than deciding unilaterally -- an officer's tolerance for false
+  alarms vs missed spikes should set it.

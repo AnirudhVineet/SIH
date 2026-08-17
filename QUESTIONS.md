@@ -160,20 +160,33 @@ on the table for any model on that specific commodity/horizon combination
 
 ## 6. Quantile LightGBM's uncertainty band is under-calibrated for onion
 
-80% prediction-interval coverage should be ~80% by definition; measured
-across the full backtest it's 71.3% (7d) / 74.1% (14d) overall, and unevenly
-so -- potato and tur are close to target (75-82%), onion is well short
-(63.1%/64.9%). Numbers and how they were computed are in PROGRESS.md.
+### RESOLVED -- conformal calibration applied
 
-**Impact:** CLAUDE.md's example driver sentence ("80% CI ₹164-₹179") is a
-reasonable claim to make for tur or potato forecasts today, but for onion
-it would currently overstate confidence -- the true band is narrower than
-80% coverage implies. Not attempting a fix (conformal calibration or
-similar) in this run since that edges toward "new architecture," which is
-explicitly off the table for this pass. Flagging so whoever wires the
-quantile output into the demo's "why panel" sentence knows to either
-widen onion's band with a calibration pass first, or hedge the confidence
-language for onion specifically.
+Fixed with split conformal prediction (Conformalized Quantile Regression),
+per-commodity, calibrated on a held-out recent 180-day slice of training
+data. Full numbers in PROGRESS.md and `models/quantile_coverage.csv`.
+Overall 80%-band coverage went 70.5% -> 77.8%; the 14d band now essentially
+hits target (71.4% -> 80.7%) and onion, the original problem, improved most
+in relative terms (63.1% -> 71.1% at 7d, 67.2% -> 78.4% at 14d).
+
+Two residual caveats worth knowing before these bands go on screen:
+
+1. **The 7d band still under-covers** (75.1% vs 80% target), and onion 7d
+   is still the weakest cell at 71.1%. Conformal calibration corrects for a
+   miscalibration level it can measure on the calibration window; it can't
+   fully fix a band whose *shape* is wrong, and short-horizon onion
+   volatility is genuinely regime-dependent.
+2. **Tur's band got noticeably wider** (1199 -> 1517 at 7d, 1277 -> 2013 at
+   14d) to buy its coverage improvement. That's the honest price of correct
+   calibration -- the old narrow band was simply overconfident -- but it
+   does mean tur's on-screen interval will look visibly wide.
+
+Also fixed while here: the three alphas are independent LightGBM fits and
+were **crossing** on ~1.9% of rows (a p50 above its own p90), which would
+render as an inverted band. Now passed through monotone rearrangement
+(sorting the three values per row, Chernozhukov et al. 2010 -- weakly
+reduces estimation error, so it's not a cosmetic fudge). Caught by the
+existing band-monotonicity test.
 
 ## 7. `months_since_harvest` granularity vs. spec
 
