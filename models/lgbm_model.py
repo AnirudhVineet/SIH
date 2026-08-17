@@ -23,11 +23,10 @@ from __future__ import annotations
 import datetime as dt
 
 import lightgbm as lgb
-import pandas as pd
 import polars as pl
 
-from features import CATEGORICAL_COLUMNS, MODEL_COLUMNS, build_features
-from harness import TARGET
+from features import CATEGORICAL_COLUMNS, build_features, to_model_frame
+from harness import make_supervised
 
 LGBM_PARAMS = dict(
     objective="regression",
@@ -45,28 +44,9 @@ LGBM_PARAMS = dict(
 _cache: dict[dt.date, dict] = {}
 
 
-def _to_model_frame(df: pl.DataFrame) -> pd.DataFrame:
-    X = df.select(MODEL_COLUMNS).to_pandas()
-    for c in CATEGORICAL_COLUMNS:
-        X[c] = X[c].astype("category")
-    return X
-
-
-def _make_target(engineered: pl.DataFrame, horizon: int) -> pl.DataFrame:
-    future = engineered.select(
-        ["commodity", "centre", "date", pl.col(TARGET).alias("target")]
-    ).with_columns((pl.col("date") - pl.duration(days=horizon)).alias("origin_date"))
-    return engineered.join(
-        future.select(["commodity", "centre", "origin_date", "target"]),
-        left_on=["commodity", "centre", "date"],
-        right_on=["commodity", "centre", "origin_date"],
-        how="left",
-    )
-
-
 def _fit_for_horizon(engineered: pl.DataFrame, horizon: int) -> lgb.LGBMRegressor:
-    sup = _make_target(engineered, horizon).drop_nulls(subset=["target"])
-    X = _to_model_frame(sup)
+    sup = make_supervised(engineered, horizon).drop_nulls(subset=["target"])
+    X = to_model_frame(sup)
     y = sup["target"].to_pandas()
 
     model = lgb.LGBMRegressor(**LGBM_PARAMS)
@@ -92,5 +72,5 @@ def lgbm_predict(train: pl.DataFrame, origin: dt.date, horizon: int) -> pl.DataF
             schema={"commodity": pl.String, "centre": pl.String, "pred": pl.Float64}
         )
 
-    preds = model.predict(_to_model_frame(today))
+    preds = model.predict(to_model_frame(today))
     return today.select(["commodity", "centre"]).with_columns(pred=pl.Series(preds))

@@ -98,6 +98,17 @@ def _engineer_series(g: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def to_model_frame(df: pl.DataFrame) -> pd.DataFrame:
+    """Selects MODEL_COLUMNS and marks CATEGORICAL_COLUMNS as pandas
+    `category` dtype, ready for lgb.LGBMRegressor(categorical_feature=...).
+    Shared by every LightGBM-family model so train-time and predict-time
+    frames are built identically."""
+    X = df.select(MODEL_COLUMNS).to_pandas()
+    for c in CATEGORICAL_COLUMNS:
+        X[c] = X[c].astype("category")
+    return X
+
+
 def build_features(train: pl.DataFrame) -> pl.DataFrame:
     """train -> same rows, with ENGINEERED_COLUMNS added (calendar-safe),
     keeping TRUSTED_COLUMNS untouched. Safe to call repeatedly on growing
