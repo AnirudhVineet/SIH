@@ -244,7 +244,8 @@ def _shap_drivers(
                         "feature": feature,
                         "label": human_label(feature),
                         "shap_value": float(contribs[j]),
-                        "feature_value": None if raw is None or _is_na(raw) else str(raw),
+                        "feature_value": format_feature_value(feature, raw),
+                        "raw_value": None if raw is None or _is_na(raw) else str(raw),
                     }
                 )
     return pl.DataFrame(rows)
@@ -255,6 +256,37 @@ def _is_na(v) -> bool:
         return bool(np.isnan(v))
     except (TypeError, ValueError):
         return False
+
+
+def format_feature_value(feature: str, raw) -> str | None:
+    """Display string for a driver's current value.
+
+    Raw repr is unreadable on screen -- momentum arrives as
+    0.032258064516129004 and an EWMA as 1538.4286528487282. Formats by what
+    the feature actually is: rates as percentages, prices and rainfall to
+    sensible precision, flags as Yes/No.
+    """
+    if raw is None or _is_na(raw):
+        return None
+    if isinstance(raw, (bool, np.bool_)):
+        return "Yes" if raw else "No"
+
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+
+    if feature.startswith("festival_"):
+        return "Yes" if value else "No"
+    if feature == "momentum_30":
+        return f"{value * 100:+.1f}%"
+    if feature.startswith("price_") or feature in ("temp_max", "temp_min"):
+        return f"{value:,.0f}"
+    if feature.startswith("rainfall"):
+        return f"{value:,.1f} mm"
+    if feature in ("month", "dow", "months_since_harvest"):
+        return f"{value:.0f}"
+    return f"{value:,.2f}"
 
 
 def describe_driver(feature: str, value: str | None, shap_value: float) -> str:
@@ -315,8 +347,10 @@ def build_sentences(forecasts: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFr
             .sort("rank")
             .head(3)
         )
+        # raw_value, not the display-formatted feature_value -- describe_driver
+        # parses numerics to phrase them ("momentum +10.7%").
         clauses = [
-            describe_driver(d["feature"], d["feature_value"], d["shap_value"])
+            describe_driver(d["feature"], d["raw_value"], d["shap_value"])
             for d in top.iter_rows(named=True)
         ]
 
@@ -324,8 +358,8 @@ def build_sentences(forecasts: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFr
         sentence = (
             f"{f['commodity'].title()} in {f['centre']} forecast to {direction} "
             f"{abs(f['pct_change']):.1f}% over {f['horizon']} days "
-            f"(Rs {f['current_price']:,.0f} -> Rs {f['p50']:,.0f}/quintal, "
-            f"80% band Rs {f['p10']:,.0f}-Rs {f['p90']:,.0f})."
+            f"(₹{f['current_price']:,.0f} → ₹{f['p50']:,.0f}/quintal, "
+            f"80% band ₹{f['p10']:,.0f}–₹{f['p90']:,.0f})."
         )
         if clauses:
             sentence += " Main drivers vs this commodity's recent norm: " + ", ".join(clauses) + "."

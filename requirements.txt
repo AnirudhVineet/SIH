@@ -1,0 +1,20 @@
+# Runtime for the dashboard (app/) — this is what a deploy needs.
+streamlit==1.61.1
+polars==1.37.1
+plotly==6.7.0
+pyarrow==24.0.0
+pandas==2.3.3
+numpy==1.26.4
+
+# Modelling (models/) — needed to regenerate app/data artifacts and to
+# rerun the backtests, not to serve the already-built dashboard.
+lightgbm==4.7.0
+statsmodels==0.14.6
+shap==0.49.1
+scikit-learn==1.7.2
+
+# Phase 4 (decision layer) — not yet used.
+PuLP==3.3.0
+
+# Ingest (ingest/) — Phase 1.
+requests==2.32.5

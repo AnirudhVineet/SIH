@@ -370,3 +370,42 @@ Not touching Phase 3/4 or ingest.
   buys +5.7pp episode recall for -5pp precision. Flagging for the team
   rather than deciding unilaterally -- an officer's tolerance for false
   alarms vs missed spikes should set it.
+
+- **Phase 3 (dashboard): done, all four screens render.**
+  `app/dashboard.py` + `app/theme.py`, backed by
+  `models/build_dashboard_artifacts.py` which precomputes everything from
+  the fitted Phase 2 models. The app never trains on page load, so it
+  starts instantly and deploys cleanly.
+
+  Colour was validated, not eyeballed: one accent (#3987e5) for chrome and
+  the forecast line; the signed SHAP bars use the blue<->red diverging pair
+  (CVD dE 66.4, well clear of the >=12 target); the stress choropleth uses
+  a semantic-heat sequential ramp with a scale legend, lightness
+  monotonically decreasing. No dual axes anywhere -- mandi arrivals would
+  have been the natural second axis on the commodity chart, but arrivals
+  don't exist in this dataset and a second y-scale invents correlation
+  regardless.
+
+  Screenshotted every screen and fixed what the renders exposed, rather
+  than assuming they were fine:
+  * the choropleth used `fitbounds="geojson"`, which cropped to only the 9
+    shaded states -- India was unrecognisable. Now draws all 36 states as a
+    neutral base layer with the data states on top.
+  * a 7-day forecast against 400 days of history was an invisible sliver;
+    added a history-window control defaulting to 90 days so the P10-P90
+    cone is actually legible.
+  * driver values rendered as raw floats (`0.032258064516129004`); now
+    formatted per feature type (rates as %, prices with separators,
+    rainfall in mm).
+  * the stress caption claimed the selected horizon; the index is always
+    built on the 14-day outlook.
+
+  Screen 4 (Action) is deliberately a placeholder that says so. It lists the
+  real model outputs ready to feed the Phase 4 optimiser and names the three
+  LP inputs that have no data source (`available_stock`,
+  `state_absorption_capacity_i`, transport costs). A mocked recommendation
+  table would have looked signable while being a guess -- not acceptable for
+  a tool aimed at a Rs 10,000 crore fund.
+
+  Also added `requirements.txt` (pinned) and `README.md` with the headline
+  backtest numbers and an explicit "known gaps" section.
