@@ -44,7 +44,11 @@ import procurement as procurement_mod  # noqa: E402
 
 OUT_DIR = h.ROOT / "app" / "data"
 HISTORY_DAYS = 400  # how much history the commodity chart shows
-TOP_DRIVERS = 6
+# Pool of candidate drivers stored per series/horizon (used for the bar chart
+# and as the source pool for the sentence's category-balanced pick below).
+# Wider than the 3-4 the sentence actually uses so that a real but
+# mid-magnitude weather/season signal still has a chance to be selected.
+TOP_DRIVERS = 8
 
 # Not every centre reports on the latest date -- reporting is patchy, which
 # is the whole reason for the is_imputed flag. Rather than dropping those
@@ -323,6 +327,96 @@ def describe_driver(feature: str, value: str | None, shap_value: float) -> str:
     return f"{label} {direction} recent norm"
 
 
+# Groupings used only to keep the driver sentence balanced across what the
+# model actually knows about -- price history, weather, and the calendar --
+# instead of it being whatever N features happen to have the largest raw
+# SHAP magnitude, which in practice tends to be three flavours of "price
+# trend" (lag/rolling-mean/EWMA are correlated and often rank together).
+# Deliberately does not include a "market arrivals" or "production estimate"
+# category: no arrivals or yield/sowing series exists anywhere in this
+# pipeline (see the Why panel's own disclosure in app/dashboard.py), so
+# inventing a category for it would either always be empty or, worse,
+# tempt a future edit to fill it with a proxy that isn't really that thing.
+TREND_FEATURES = {
+    "momentum_30",
+    *(f"price_lag_{n}" for n in (1, 7, 14, 30, 90)),
+    *(f"price_roll_mean_{w}" for w in (7, 30, 90)),
+    *(f"price_roll_std_{w}" for w in (7, 30, 90)),
+    *(f"price_ewma_{s}" for s in (7, 30)),
+}
+WEATHER_FEATURES = {
+    "rainfall_mm",
+    "rainfall_7d_sum",
+    "rainfall_30d_sum",
+    "rainfall_dev_from_normal",
+    "temp_max",
+    "temp_min",
+}
+SEASON_FEATURES = {
+    "month",
+    "doy_sin",
+    "doy_cos",
+    "dow",
+    "months_since_harvest",
+    "festival_diwali",
+    "festival_navratri",
+    "festival_eid",
+    "festival_onam",
+}
+
+# Order in which categories get a guaranteed slot in the sentence, if the
+# data actually supports one (see _select_sentence_drivers).
+SENTENCE_CATEGORY_PRIORITY = ("trend", "weather", "season")
+SENTENCE_DRIVER_SLOTS = 4
+
+
+def driver_category(feature: str) -> str:
+    if feature in TREND_FEATURES:
+        return "trend"
+    if feature in WEATHER_FEATURES:
+        return "weather"
+    if feature in SEASON_FEATURES:
+        return "season"
+    return "other"  # cross-commodity prices, currently the only "other"
+
+
+def _select_sentence_drivers(top_drivers: list[dict]) -> list[dict]:
+    """Picks up to SENTENCE_DRIVER_SLOTS drivers for the sentence: the
+    strongest real contributor from each of trend/weather/season first (in
+    that priority order, skipping any category with no representative among
+    this row's top SHAP drivers -- never invented), then fills any remaining
+    slots by raw SHAP magnitude. `top_drivers` must already be sorted by
+    rank (magnitude, descending).
+
+    Without this, a naive top-N by magnitude can silently be e.g. three
+    price-lag variants -- technically the largest SHAP values, but useless
+    to an officer who already knows the price moved and wants to know why,
+    and who has no way to tell that real weather/season signal for this row
+    was simply outranked and dropped.
+    """
+    by_category: dict[str, dict] = {}
+    for d in top_drivers:
+        by_category.setdefault(driver_category(d["feature"]), d)
+
+    chosen: list[dict] = []
+    seen: set[str] = set()
+    for category in SENTENCE_CATEGORY_PRIORITY:
+        d = by_category.get(category)
+        if d is not None:
+            chosen.append(d)
+            seen.add(d["feature"])
+
+    for d in top_drivers:
+        if len(chosen) >= SENTENCE_DRIVER_SLOTS:
+            break
+        if d["feature"] not in seen:
+            chosen.append(d)
+            seen.add(d["feature"])
+
+    chosen.sort(key=lambda d: d["rank"])
+    return chosen
+
+
 def build_sentences(forecasts: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFrame:
     """The officer-facing sentence per (commodity, centre, horizon).
 
@@ -339,13 +433,13 @@ def build_sentences(forecasts: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFr
                 & (pl.col("horizon") == f["horizon"])
             )
             .sort("rank")
-            .head(3)
         )
+        selected = _select_sentence_drivers(list(top.iter_rows(named=True)))
         # raw_value, not the display-formatted feature_value -- describe_driver
         # parses numerics to phrase them ("momentum +10.7%").
         clauses = [
             describe_driver(d["feature"], d["raw_value"], d["shap_value"])
-            for d in top.iter_rows(named=True)
+            for d in selected
         ]
 
         direction = "rise" if f["pct_change"] >= 0 else "ease"
@@ -449,6 +543,10 @@ def build_procurement(
 
 
 def main() -> None:
+    # Windows' default console codepage (cp1252) can't encode the rupee
+    # sign or box-drawing characters in polars' printed tables below.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     frame = h.load_frame()
     origin = latest_origin(frame)
