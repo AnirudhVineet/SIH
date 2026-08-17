@@ -30,6 +30,28 @@ source (Agmarknet arrivals-in-tonnes, data.gov.in mandi API) planned before
 the demo? If LightGBM needs it to convincingly beat SARIMAX, that's a
 blocker worth prioritizing.
 
+### RESOLVED (checked the raw files directly): arrivals is NOT in our raw data
+
+Checked all 12 cached raw Kaggle year files (`data/raw/prices/2015..2026.parquet`).
+Schema is **identical across every year** and contains exactly 11 columns:
+
+```
+State, District, Market, Commodity, Variety, Grade,
+Arrival_Date, Min_Price, Max_Price, Modal_Price, Commodity_Code
+```
+
+No column matching `arriv|quant|tonne|qty|volume|weight|supply|stock`
+other than `Arrival_Date` -- and `Arrival_Date` is a **date string**
+(dtype String, values like `"2025-01-01"`), i.e. the date the lot arrived
+at the mandi, **not** a tonnage. This is a prices-only Agmarknet dump; the
+arrivals-in-tonnes series that Agmarknet publishes separately is simply
+not in this Kaggle mirror.
+
+**Conclusion: there is nothing to rejoin. Not looking further** (per the
+explicit instruction to stop if it's genuinely absent). Getting arrivals
+would require a new ingest against Agmarknet's own arrivals endpoint or
+data.gov.in -- a Phase 1 task, out of scope here.
+
 ## 2. `retail_price` is entirely null
 
 Every row in `prices.parquet` / `modelling_frame.parquet` has

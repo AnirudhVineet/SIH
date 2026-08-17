@@ -257,3 +257,19 @@ Not touching Phase 3/4 or ingest.
   caching actually reuses the engineered frame and only refits the new
   horizon's model, and quantile band monotonicity (P10 <= P50 <= P90) plus
   median-matches-band consistency. All 30 pass.
+
+## 2026-08-17 — post-acceptance fixes (FIX 1/2/3) + Phase 3
+
+- **FIX 1 (arrivals): checked, genuinely absent, stopped looking.** Read the
+  schema of all 12 cached raw Kaggle year files
+  (`data/raw/prices/2015..2026.parquet`). Identical across every year, 11
+  columns: State, District, Market, Commodity, Variety, Grade,
+  Arrival_Date, Min_Price, Max_Price, Modal_Price, Commodity_Code. Searched
+  for any column matching `arriv|quant|tonne|qty|volume|weight|supply|stock`
+  -- the only hit is `Arrival_Date`, which is a **date string** (dtype
+  String, e.g. "2025-01-01"), the date a lot arrived at the mandi, not a
+  tonnage. This Kaggle mirror is prices-only; Agmarknet's separate
+  arrivals-in-tonnes series isn't in it. Nothing to rejoin, no backtest
+  rerun to report. Getting arrivals needs a fresh ingest (Agmarknet
+  arrivals endpoint / data.gov.in), which is Phase 1 and out of scope.
+  QUESTIONS.md #1 updated to RESOLVED.
