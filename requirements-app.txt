@@ -1,0 +1,13 @@
+# Runtime-only dependencies for serving the dashboard.
+# The modelling stack (lightgbm, shap, statsmodels, scikit-learn) is NOT here:
+# the app reads pre-built artifacts from app/data/ and never fits a model at
+# request time, so shipping it would triple the image for no benefit.
+# Use requirements.txt for the full dev/modelling environment.
+streamlit==1.61.1
+polars==1.37.1
+plotly==6.7.0
+pyarrow==24.0.0
+pandas==2.3.3
+numpy==1.26.4
+PuLP==3.3.0
+reportlab==4.5.1

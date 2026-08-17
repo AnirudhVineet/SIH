@@ -25,9 +25,21 @@ Full tables: `models/backtest_results.csv`, `models/spike_results.csv`,
 ## Run the dashboard
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt      # full dev/modelling env
 streamlit run app/dashboard.py
 ```
+
+Serving only needs `requirements-app.txt` (no lightgbm/shap/statsmodels — the
+app reads pre-built artifacts and never fits a model at request time).
+
+## Deploy
+
+```bash
+hf auth login && python deploy/deploy_hf.py     # Hugging Face Spaces
+docker build -t pss01 . && docker run -p 7860:7860 pss01
+```
+
+See `deploy/README.md` for Render/Railway settings.
 
 The app reads pre-built artifacts from `app/data/` and never trains on page
 load. Four screens: national stress map, commodity forecast view, why-panel
@@ -52,7 +64,8 @@ features/   feature builder                            (Phase 1)
 models/     harness, baselines, SARIMAX, LightGBM,
             quantile + conformal, spike classifier     (Phase 2)
 app/        Streamlit dashboard + prebuilt artifacts   (Phase 3)
-decide/     release optimiser                          (Phase 4 — not built)
+decide/     stress index, release optimiser, PDF brief (Phase 4)
+deploy/     Docker + Hugging Face Spaces deploy
 api/        FastAPI                                    (not built)
 ```
 
