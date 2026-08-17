@@ -232,3 +232,28 @@ Not touching Phase 3/4 or ingest.
   than chasing a clean sweep, and #1/#4 for the two most likely paths to
   one (arrivals data, Phase-1 lag-feature fix) if the team wants to
   revisit before the demo.
+- All 7 required deliverables done with time left, so per the run rules
+  ("if you finish early, write tests, don't start the dashboard") added
+  `models/tests/` (pytest, 30 tests, `python -m pytest models/tests/` from
+  the repo root, ~5s). Mostly pure unit tests on tiny synthetic frames
+  (fast, no real data needed): `test_harness.py` (mape/rmse formulas,
+  origin spacing/bounds, `make_supervised`'s date-safe join -- including a
+  regression test that a positional shift() would get wrong across a gap
+  but the join-based version doesn't -- summarize aggregation,
+  `eval_at_origin`'s imputed-actual filtering), `test_baselines.py`,
+  `test_features.py` (the calendar-correctness fix from QUESTIONS.md #4:
+  lag/rolling/momentum all re-verified against the same
+  gap-produces-null / contiguous-produces-real-value logic, plus
+  series-independence and trusted-column passthrough). `test_sarimax_model.py`
+  covers the divergence-guard bug fix directly -- refactored the
+  plausibility check out of `_fit_and_forecast` into a pure
+  `is_plausible_forecast()` function first (see separate commit) so it's
+  testable without running a real MLE fit, plus two real-fit integration
+  tests (too little history -> skipped, well-behaved series -> sane
+  forecast). `test_lgbm_smoke.py` is the one integration-style file
+  (building fully synthetic frames with every TRUSTED_COLUMNS populated
+  was more boilerplate than it was worth, so these use a small slice of
+  the real parquet instead): finite/positive predictions, per-origin model
+  caching actually reuses the engineered frame and only refits the new
+  horizon's model, and quantile band monotonicity (P10 <= P50 <= P90) plus
+  median-matches-band consistency. All 30 pass.
