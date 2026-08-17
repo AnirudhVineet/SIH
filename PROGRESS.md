@@ -26,3 +26,26 @@ Not touching Phase 3/4 or ingest.
   present. 24 CPUs available — plan to parallelize the SARIMAX walk-forward
   fits (720 of them: 24 origins x 30 series) with joblib if a single-fit
   timing test says it's needed.
+- **Discovered series have real reporting gaps, not a fully-filled daily
+  grid**: e.g. tur/Delhi spans 3650 days but only has 2033 rows (a 1618-day
+  hole). This matches prices.py's fill_gaps docstring ("ffill <=3 days ->
+  state-median impute -> drop remaining nulls") -- rows that couldn't be
+  imputed are dropped outright, not kept as nulls. Consequence: building
+  direct multi-horizon labels with a row-positional `.shift(-horizon)`
+  would silently grab the wrong date across a gap. `models/harness.py`'s
+  `make_supervised()` instead joins each row to the actual row at
+  `date + horizon` (calendar days), which is correct regardless of gaps and
+  naturally nulls out the target when that date doesn't exist.
+- Built `models/harness.py`: origin generation (30-day steps over the last
+  2 years, 25 origins from 2023-10-23 to 2025-10-12), MAPE/RMSE, the
+  `predict_fn(train, origin, horizon) -> [commodity, centre, pred]`
+  interface every model plugs into, `run_backtest`/`summarize` for
+  aggregation, and `make_supervised` for direct-horizon training frames.
+  Evaluation targets are restricted to non-imputed rows (`~is_imputed`) so
+  the backtest scores against real reported prices, not fabricated fill
+  values -- models may still train on imputed rows. Smoke-tested against
+  the real parquet: origins generate correctly, the date-based join gives
+  correct 7-day-ahead targets on a spot-checked series, `summarize()`
+  aggregates correctly on a synthetic frame (first version used
+  `pl.map_groups` for MAPE/RMSE and hit a polars UDF return-type inference
+  error -- replaced with plain vectorized polars expressions).
