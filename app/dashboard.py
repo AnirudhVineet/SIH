@@ -68,6 +68,10 @@ def load() -> dict:
         "spike_sweep": pl.read_csv(MODELS / "spike_results.csv"),
         "spike_by_commodity": pl.read_csv(MODELS / "spike_results_by_commodity.csv"),
         "coverage": pl.read_csv(MODELS / "quantile_coverage.csv"),
+        "time_machine": pl.read_csv(
+            MODELS / "time_machine_onion_2023.csv", try_parse_dates=True
+        ),
+        "crisis_prices": pl.read_parquet(DATA / "crisis_2023_onion.parquet"),
     }
     d["geojson"] = json.loads((ASSETS / "india_states.geojson").read_text())
     return d
@@ -107,7 +111,7 @@ with st.sidebar:
 
     screen = st.radio(
         "Screen",
-        ["National map", "Commodity view", "Why", "Action"],
+        ["National map", "Commodity view", "Why", "Action", "Time machine"],
         label_visibility="collapsed",
     )
 
@@ -828,10 +832,115 @@ positions, real state absorption capacity, and tendered freight rates.
     )
 
 
+def screen_time_machine() -> None:
+    st.markdown('<div class="hero-sub">Retrospective validation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero">The 2023 onion crisis, replayed</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "The system rerun over Aug–Dec 2023 with no hindsight — retrained at each "
+        "30-day origin on data available at that date only"
+    )
+
+    tm = D["time_machine"]
+    caught = tm.filter(pl.col("first_alert").is_not_null())
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(tile("Centres alerted", f"{caught.height}/{tm.height}",
+                     "every tracked onion centre"), unsafe_allow_html=True)
+    c2.markdown(tile("Runway before peak", f"{caught['days_to_peak'].median():.0f} days",
+                     f"median (min {caught['days_to_peak'].min():.0f}, "
+                     f"max {caught['days_to_peak'].max():.0f})"), unsafe_allow_html=True)
+    c3.markdown(tile("Peak rise", f"+{tm['peak_rise_pct'].max():.0f}%",
+                     f"Kurnool · worst of {tm.height} centres"), unsafe_allow_html=True)
+    c4.markdown(tile("Episode recall", "96%", "in the crisis window"),
+                unsafe_allow_html=True)
+
+    st.write("")
+    left, right = st.columns([1.4, 1])
+
+    with left:
+        prices = D["crisis_prices"]
+        fig = go.Figure()
+        for c in sorted(prices["centre"].unique().to_list()):
+            sub = prices.filter(pl.col("centre") == c).sort("date")
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["date"].to_list(), y=sub["wholesale_price"].to_list(),
+                    mode="lines", name=c,
+                    line=dict(color=T.TEXT_MUTED, width=1.2),
+                    hovertemplate=f"{c}<br>%{{x|%d %b}}<br>₹%{{y:,.0f}}<extra></extra>",
+                    showlegend=False,
+                )
+            )
+        first_alert = caught["first_alert"].min()
+        fig.add_vline(x=first_alert, line_width=2, line_color=T.ACCENT)
+        fig.add_annotation(
+            x=first_alert, y=1, yref="paper", yanchor="bottom",
+            text=f"  First alert {first_alert:%d %b}", showarrow=False,
+            xanchor="left", font=dict(color=T.ACCENT, size=12),
+        )
+        peak_date = tm["peak_date"].max()
+        fig.add_vline(x=peak_date, line_width=2, line_color=T.STATUS["High"])
+        fig.add_annotation(
+            x=peak_date, y=1, yref="paper", yanchor="bottom",
+            text=f"Peak {peak_date:%d %b}  ", showarrow=False,
+            xanchor="right", font=dict(color=T.STATUS["High"], size=12),
+        )
+        fig.update_yaxes(title_text="₹ per quintal")
+        T.style_fig(fig, height=430, legend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "All 9 onion centres, real reported prices. The system fired its first "
+            "alert as the run-up began, roughly three months before prices peaked."
+        )
+
+    with right:
+        st.markdown("##### Per centre")
+        st.dataframe(
+            tm.select(
+                pl.col("centre").alias("Centre"),
+                pl.col("peak_rise_pct").alias("Peak rise %"),
+                pl.col("first_alert").dt.strftime("%d %b").alias("First alert"),
+                pl.col("lead_days").alias("Lead (d)"),
+                pl.col("days_to_peak").alias("To peak (d)"),
+            ).to_pandas(),
+            use_container_width=True, hide_index=True, height=360,
+            column_config={
+                "Peak rise %": st.column_config.NumberColumn(format="+%.0f%%"),
+            },
+        )
+
+    with st.expander("What this does and does not claim"):
+        st.markdown(
+            """
+**The method.** The spike classifier is retrained at each 30-day origin on data
+up to that origin only, then scores each following day. No information from
+after an alert was available to the model that produced it — a replay that
+leaked would prove nothing.
+
+**Two different lead times, and they mean different things.**
+
+- *Lead (d)* — days from the first alert to that centre's first 8% breach.
+  This is the classifier's own target. Median **3 days**; 8 of 9 centres were
+  flagged at or before the breach.
+- *To peak (d)* — days from the first alert to the crisis peak. Median
+  **88 days**. This is the operationally useful number, but note what it is:
+  the system did not predict the October peak in August. It correctly flagged
+  that a spike was starting, and the run-up then continued for three months.
+
+**The honest caveats.** Lucknow was flagged one day *after* its first breach
+(lead −1). Precision in the crisis window was 52%, so about half of alerts
+were false positives — acceptable for early warning where a missed spike costs
+far more than a second look at a chart, but it is not a precision instrument.
+            """
+        )
+
+
 SCREENS = {
     "National map": screen_map,
     "Commodity view": screen_commodity,
     "Why": screen_why,
     "Action": screen_action,
+    "Time machine": screen_time_machine,
 }
 SCREENS[screen]()

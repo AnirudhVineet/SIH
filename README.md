@@ -41,9 +41,9 @@ docker build -t pss01 . && docker run -p 7860:7860 pss01
 
 See `deploy/README.md` for Render/Railway settings.
 
-The app reads pre-built artifacts from `app/data/` and never trains on page
-load. Four screens: national stress map, commodity forecast view, why-panel
-(SHAP + generated sentence), and the Phase 4 action placeholder.
+Four screens: national stress map, commodity forecast view, why-panel (SHAP +
+generated sentence), and the buffer-stock release plan with a live what-if
+slider and one-page PDF export.
 
 ## Regenerate everything
 

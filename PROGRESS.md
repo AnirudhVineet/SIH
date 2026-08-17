@@ -409,3 +409,57 @@ Not touching Phase 3/4 or ingest.
 
   Also added `requirements.txt` (pinned) and `README.md` with the headline
   backtest numbers and an explicit "known gaps" section.
+
+## Phase 4 — decision layer (timeboxed, same day)
+
+- **Stress Index rebuilt** (`decide/stress.py`), per commodity x centre from
+  three real model outputs: 14-day P50 vs that centre's **own** trailing
+  1-year median (45%), spike probability (35%), conformal band width (20%).
+  Using each centre's own median rather than today's price makes scores
+  comparable across centres trading at very different levels, and correctly
+  flags a market that is easing but still far above normal -- Bhopal potato
+  is the live case: forecast -12.7% yet still +31% over its 1-year median,
+  so it scores High. Feeds the map colours and the optimizer.
+- **Optimizer inputs** (`decide/reference_data.py`). All three are labelled
+  in the UI and printed into the PDF: available stock is an operator slider,
+  absorption capacity is population-derived (Census 2011), transport is real
+  haversine distance from an assumed Delhi depot x a flat per-tonne-km rate.
+  Distances are genuine; the rate and the single-depot assumption are not.
+- **Release optimizer** (`decide/optimizer.py`, PuLP). Screen 4 is no longer
+  a placeholder. Three real bugs, all found by looking at the output rather
+  than trusting it:
+  1. Raw rupee transport costs (0-6,000) swamped a benefit term of 0.02-0.08
+     per tonne by five orders of magnitude -- the LP shipped everything to
+     the zero-distance depot city. Fixed by normalising both terms so lambda
+     is expressed in stress-points.
+  2. The first objective scored relief as *fraction of capacity filled*,
+     which makes a tonne worth more in a small state. It allocated **nothing
+     at all** to Nagpur and Mumbai, the two highest-stress centres. Replaced
+     with per-tonne stress weighting.
+  3. Both Maharashtra centres each claimed the **full** state capacity,
+     letting the LP spend that state's capacity twice. Now split between them.
+- **What-if slider** verified live in a browser, not assumed: 50,000 t ->
+  10,000 t correctly re-solves and narrows to the two top-priority centres
+  with a partial fill at the margin.
+- **PDF brief** (`decide/report.py`) via ReportLab rather than WeasyPrint,
+  which needs GTK/Pango system libs that would complicate the deploy image.
+  Input-provenance caveats are printed on the page, so they travel with the
+  document rather than living only in the UI. Caught a rendering bug from
+  reading the generated PDF: the rupee glyph rendered as a black box in the
+  PDF base-14 fonts, so the shared labels are ASCII now.
+- **Deploy prepared but NOT live**: no Docker/gh/flyctl/railway CLI on this
+  machine and the HF CLI is unauthenticated, so it needs a credential.
+  `Dockerfile` + `requirements-app.txt` (runtime-only: drops
+  lightgbm/shap/statsmodels, verified the serving path never imports them)
+  + `deploy/deploy_hf.py` one-command push. Staging verified: 22 files,
+  1.2 MB.
+- **Stretch done -- 2023 onion crisis replay** (`models/time_machine.py`,
+  5th dashboard screen). Confirmed the data covers it (onion ran 819 ->
+  6,000/qtl Aug-Dec 2023). Retrained at each 30-day origin on data available
+  at that date only, no hindsight. **All 9 onion centres alerted in the first
+  days of August, a median 88 days before the late-October peak**, where
+  prices had risen 233-466%. Two lead times reported separately because they
+  mean different things: median 3 days ahead of each centre's first 8%
+  breach (the classifier's actual target), vs median 88 days of runway
+  before the peak (the operationally useful figure). Stated caveats: Lucknow
+  fired one day *after* its breach, and crisis-window precision was 52%.
