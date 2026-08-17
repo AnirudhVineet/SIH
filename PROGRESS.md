@@ -115,3 +115,59 @@ Not touching Phase 3/4 or ingest.
   Roughly ties naive on onion/tur, clearly beats naive on potato -- a
   believable benchmark, not sandbagged, which is what LightGBM needs to
   visibly beat.
+- Built `models/features.py`: the date-safe replacement for the buggy
+  price_lag_*/roll_*/ewma_*/momentum_30 columns (QUESTIONS.md #4), computed
+  per (commodity, centre) group via pandas time-aware ops --
+  `Series.shift(n, freq="D")` + reindex for lags (not `.shift(n)`, which is
+  row count), `.rolling("Nd")` for rolling mean/std, `.ewm(halflife="Nd",
+  times=idx)` for EWMA (parameterized by halflife in days rather than
+  "span", since span-based decay has no well-defined meaning on
+  irregularly-spaced data). Trusted pre-built columns (weather, festivals,
+  calendar, cross-commodity, months_since_harvest) pass through untouched.
+  Spot-checked against the known 671-day tur/Delhi gap: `price_lag_1`/
+  `price_lag_7` are now correctly null there (previously silently wrong),
+  `price_roll_mean_7` correctly falls back to just the single in-window
+  point. Runs in ~0.28s on the full 99.5k-row history.
+- Built `models/lgbm_model.py`: one pooled LightGBM model per (origin,
+  horizon), trained across all 3 commodities x 10 centres at once with
+  commodity/centre as categorical features (matches the "one global model"
+  scaling story in CLAUDE.md's Q&A prep). Target built the same
+  date-based-join way as `harness.make_supervised`. Features/model cached
+  per origin so the horizon-14 `predict_fn` call reuses horizon-7's
+  feature engineering. Full 25-origin backtest: ~54s.
+
+  First result, default params (300 trees, lr=0.05, 31 leaves, L2):
+
+  | commodity | h  | sarimax | lgbm  |
+  |-----------|----|--------:|------:|
+  | onion     | 7  | 13.4%   | 14.5% |
+  | onion     | 14 | 14.1%   | 14.1% |
+  | potato    | 7  | 11.8%   | 10.0% |
+  | potato    | 14 | 12.9%   | 10.5% |
+  | tur       | 7  | 4.7%    | 5.3%  |
+  | tur       | 14 | 4.3%    | 4.4%  |
+
+  Not a clean sweep -- LGBM clearly wins potato, roughly ties onion h14,
+  loses narrowly on onion h7 and both tur horizons. Per the run rules
+  ("if it doesn't beat SARIMAX, debug features... don't try new
+  architectures") I tried three feature/config variants before accepting
+  this: (1) `regression_l1` objective + more capacity (500 trees, 63
+  leaves, subsample/colsample) -- macro-avg MAPE 9.86% (worse than
+  default's 9.82%); (2) separate model per commodity instead of one pooled
+  model (still pooling centres) -- 9.96% (worse); (3) time-based
+  train/validation split with early stopping -- 10.73% (worse; the
+  85/15 tail split on an expanding window is a small and often
+  unrepresentative recent slice). The original default config was the best
+  of all four tried, so it's what's committed -- no point shipping the more
+  complex configs for a worse number. **Verdict: LGBM beats SARIMAX on
+  macro-average MAPE, 9.82% vs 10.20% (~3.7% relative improvement)**, which
+  is what the DONE criterion asks for, but it's not uniform across every
+  cell. Two likely real explanations, both already flagged in QUESTIONS.md
+  rather than worked around further: the missing arrivals join (#1) and
+  the Phase-1 lag-feature bug at the source (#4, which I've routed around
+  in my own features but couldn't fix upstream). A third, non-bug
+  explanation worth recording for Q&A prep: tur's naive/SARIMAX baselines
+  are already very strong at 7-14d (naive MAPE 4.3-4.7%) because tur is
+  highly persistent short-term -- there may just be less short-horizon
+  predictability left for any model to add on that particular
+  commodity/horizon combination.

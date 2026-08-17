@@ -109,6 +109,33 @@ of `modelling_frame.parquet` doesn't need to route around it the way I just
 did. Flagging rather than fixing there myself since that file is Phase 1 /
 ingest territory for this run.
 
+## 6. LightGBM beats SARIMAX on average, not on every commodity/horizon cell
+
+Full numbers and the three tuning variants I tried are in PROGRESS.md.
+Headline: macro-average MAPE across the 6 (commodity, horizon) cells is
+9.82% for LightGBM vs 10.20% for SARIMAX -- LightGBM wins overall, which is
+what the run's DONE criterion asks for. But it's not a clean sweep: it
+clearly wins potato (both horizons), roughly ties onion at 14d, and loses
+narrowly on onion at 7d and on both tur horizons.
+
+I did not keep tuning past three reasonable variants (L1 objective +
+more capacity, per-commodity models, early stopping) -- none beat the
+original default config, and the run rules say to debug features, not
+chase architecture/hyperparameter changes indefinitely (also: tuning
+further against this exact backtest window risks quietly overfitting the
+evaluation itself, which would make the "beats SARIMAX" number meaningless).
+
+**Question for the team:** if a clean sweep across every cell matters for
+the demo narrative (not just the aggregate number), the two most promising
+levers are both already flagged above and both outside this run's scope:
+wiring in a real arrivals source (#1), and fixing the lag-feature bug at
+its source in Phase 1 rather than routing around it in Phase 2 (#4). Worth
+noting for Q&A prep either way: tur's naive/SARIMAX baselines are already
+very strong at 7-14d (naive MAPE 4.3-4.7%) because tur is highly
+persistent short-term, so there may genuinely be less predictability left
+on the table for any model on that specific commodity/horizon combination
+-- not every "loss" here is a fixable feature gap.
+
 ## 5. `months_since_harvest` granularity vs. spec
 
 CLAUDE.md's feature list asks for "days since last harvest." The committed
