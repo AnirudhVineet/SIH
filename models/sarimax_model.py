@@ -37,6 +37,17 @@ MIN_OBS = 60  # fewer real (non-NaN) observations than this and a fit isn't trus
 _forecast_cache: dict[tuple[dt.date, str, str], pd.Series | None] = {}
 
 
+def is_plausible_forecast(forecast: pd.Series, recent_level: float, max_multiple: float = 8.0) -> bool:
+    """enforce_stationarity=False occasionally lets the optimizer land on an
+    explosive AR root (e.g. ar.L1 > 1) even when it reports convergence; for
+    a d=1 model that means forecasts blow up exponentially within a handful
+    of steps. A commodity price forecast has no business going negative or
+    landing an order of magnitude off the recent trading range, so treat
+    that as a failed fit rather than an outlier. Split out from
+    _fit_and_forecast so it's unit-testable without a real SARIMAX fit."""
+    return bool((forecast > 0).all() and (forecast <= max_multiple * recent_level).all())
+
+
 def _fit_and_forecast(series: pd.Series, steps: int) -> pd.Series | None:
     observed = series.dropna()
     if observed.shape[0] < MIN_OBS:
@@ -54,14 +65,8 @@ def _fit_and_forecast(series: pd.Series, steps: int) -> pd.Series | None:
         except Exception:
             return None
 
-    # enforce_stationarity=False occasionally lets the optimizer land on an
-    # explosive AR root (e.g. ar.L1 > 1) even when it reports convergence;
-    # for a d=1 model that means forecasts blow up exponentially within a
-    # handful of steps. A commodity price forecast 14 days out has no
-    # business being negative or an order of magnitude off the recent
-    # trading range, so treat that as a failed fit rather than an outlier.
     recent_level = observed.iloc[-30:].mean()
-    if not (forecast > 0).all() or (forecast > 8 * recent_level).any():
+    if not is_plausible_forecast(forecast, recent_level):
         return None
     return forecast
 
