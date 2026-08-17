@@ -204,3 +204,31 @@ Not touching Phase 3/4 or ingest.
   X" framing (CLAUDE.md's example sentence) is reasonably trustworthy for
   tur/potato but the equivalent onion claim would currently overstate
   confidence.
+- Built `models/run_backtest.py`: runs all five models (naive,
+  seasonal_naive, sarimax, lgbm, lgbm_q50) through the same walk-forward
+  harness end to end and writes `models/backtest_results.csv`. Rerunnable
+  with `python models/run_backtest.py` from the `models/` directory, no
+  arguments. Full run: ~322s (naive/seasonal_naive ~0.5s combined, sarimax
+  130s, lgbm 45s, lgbm_q50 147s). Numbers matched the individual per-model
+  runs above exactly -- good consistency check that nothing was order-
+  dependent or cache-polluted across models.
+
+  **DONE criterion met**: `models/backtest_results.csv` exists (commodity,
+  horizon_days, n/mape/rmse for every model, plus
+  `lgbm_improvement_vs_sarimax_pct`), and LightGBM's macro-average MAPE
+  across all 6 (commodity, horizon) cells beats SARIMAX:
+
+  | model          | macro-avg MAPE |
+  |----------------|----------------:|
+  | lgbm           | 9.82%           |
+  | lgbm_q50       | 9.89%           |
+  | sarimax        | 10.20%          |
+  | naive          | 13.24%          |
+  | seasonal_naive | 40.02%          |
+
+  Per-cell `lgbm_improvement_vs_sarimax_pct`: potato -15.7%/-18.1% (LGBM
+  clearly better), onion +8.5%/+0.3% (LGBM worse/~tied), tur +12.5%/+3.7%
+  (LGBM worse). See QUESTIONS.md #5 for why I stopped tuning here rather
+  than chasing a clean sweep, and #1/#4 for the two most likely paths to
+  one (arrivals data, Phase-1 lag-feature fix) if the team wants to
+  revisit before the demo.
