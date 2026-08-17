@@ -1,0 +1,12 @@
+[
+  {"centre": "Delhi", "state": "NCT of Delhi"},
+  {"centre": "Mumbai", "state": "Maharashtra"},
+  {"centre": "Nagpur", "state": "Maharashtra"},
+  {"centre": "Lucknow", "state": "Uttar Pradesh"},
+  {"centre": "Kolkata", "state": "West Bengal"},
+  {"centre": "Bengaluru", "state": "Karnataka"},
+  {"centre": "Patna", "state": "Bihar"},
+  {"centre": "Ahmedabad", "state": "Gujarat"},
+  {"centre": "Bhopal", "state": "Madhya Pradesh"},
+  {"centre": "Kurnool", "state": "Andhra Pradesh"}
+]

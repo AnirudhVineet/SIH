@@ -1,0 +1,7 @@
+reference/secrets.json
+data/raw/
+*.pyc
+__pycache__/
+.venv/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

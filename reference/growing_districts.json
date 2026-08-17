@@ -1,0 +1,18 @@
+{
+  "tur": [
+    {"district": "Kalaburagi", "state": "Karnataka", "lat": 17.3297, "lon": 76.8343},
+    {"district": "Latur", "state": "Maharashtra", "lat": 18.4088, "lon": 76.5604},
+    {"district": "Akola", "state": "Maharashtra", "lat": 20.7002, "lon": 77.0082},
+    {"district": "Vidisha", "state": "Madhya Pradesh", "lat": 23.5251, "lon": 77.8081}
+  ],
+  "onion": [
+    {"district": "Nashik", "state": "Maharashtra", "lat": 19.9975, "lon": 73.7898},
+    {"district": "Kurnool", "state": "Andhra Pradesh", "lat": 15.8281, "lon": 78.0373},
+    {"district": "Rajkot", "state": "Gujarat", "lat": 22.3039, "lon": 70.8022}
+  ],
+  "potato": [
+    {"district": "Agra", "state": "Uttar Pradesh", "lat": 27.1767, "lon": 78.0081},
+    {"district": "Hooghly", "state": "West Bengal", "lat": 22.8951, "lon": 88.3897},
+    {"district": "Patna", "state": "Bihar", "lat": 25.5941, "lon": 85.1376}
+  ]
+}
