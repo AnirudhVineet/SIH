@@ -49,3 +49,33 @@ Not touching Phase 3/4 or ingest.
   aggregates correctly on a synthetic frame (first version used
   `pl.map_groups` for MAPE/RMSE and hit a polars UDF return-type inference
   error -- replaced with plain vectorized polars expressions).
+- **Found a real bug in the pre-built lag/rolling features**: confirmed
+  `price_lag_1`/`price_lag_7`/`price_roll_mean_7`/etc. in
+  `modelling_frame.parquet` were computed with row-positional
+  shift/rolling over the gappy series, not date-aware -- e.g. right after a
+  671-day gap in tur/Delhi, `price_lag_1 == price_lag_7` == the price from
+  671 days earlier. Full writeup + spot-check numbers in QUESTIONS.md #4.
+  Cross-commodity/calendar/weather/festival columns checked out fine
+  (date-derived or same-date-joined, not shifted). Decision: LGBM will
+  recompute its own lag/rolling/EWMA/momentum features date-safe from raw
+  `wholesale_price`, reusing everything else from the parquet as-is.
+- Built and tested `models/baselines.py` (naive flat forecast, seasonal
+  naive = same calendar date last year with a flat-forecast fallback when
+  that date is missing). Ran both through the full harness across all 25
+  origins x {7,14}d: completes in well under a second. Results are sane
+  and match domain expectations -- naive clearly beats seasonal_naive at
+  these short horizons (onion/potato/tur are volatile enough that
+  short-term persistence beats a 365-day-ago echo):
+
+  | commodity | h  | naive MAPE | seasonal_naive MAPE |
+  |-----------|----|-----------:|---------------------:|
+  | onion     | 7  | 13.4%      | 48.1%                |
+  | onion     | 14 | 14.2%      | 49.4%                |
+  | potato    | 7  | ~20.6%     | ~40%+                |
+  | tur       | 7  | 4.3%       | 31.7%                |
+  | tur       | 14 | 4.7%       | 30.2%                |
+
+  N per (commodity,horizon) cell is 116-159 out of a 250 max (10 centres x
+  25 origins) -- coverage loss is expected and correct: it comes from
+  requiring a real (non-imputed) actual at the target date and a real row
+  at the origin date, which real reporting gaps sometimes fail.
