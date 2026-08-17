@@ -64,7 +64,52 @@ checked-in `build.py` needs to be reconciled with what actually produced the
 data on disk — right now a clean `git clone` + rerun of the pipeline would
 NOT reproduce `modelling_frame.parquet`.
 
-## 4. `months_since_harvest` granularity vs. spec
+## 4. Found the likely real reason LGBM might underperform SARIMAX -- and it isn't arrivals
+
+While building the walk-forward harness I found that `modelling_frame.parquet`
+series have real reporting gaps (not a filled daily grid -- see PROGRESS.md).
+Checking how the pre-built `price_lag_*`, `price_roll_mean/std_*`,
+`price_ewma_*`, and `momentum_30` columns behave across a gap:
+
+```
+tur / Delhi, gap of 671 days (2020-03-03 -> 2022-01-03):
+  wholesale_price on 2022-01-03 = 3000.0
+  price_lag_1  = 4331.0   <- identical to price_lag_7 below, and to the
+  price_lag_7  = 4331.0      last price actually observed on 2020-03-03,
+                              671 days earlier, not "yesterday"
+  price_roll_mean_7 = 4140.86  <- a "7-day" window that actually spans
+                                   hundreds of real days across the gap
+```
+
+These columns were evidently computed with row-positional
+`.shift(n)`/`.rolling_mean(n)` over the gappy series (n rows back), not a
+date-aware `n days back`. Every one of these price-derived columns is
+silently wrong immediately after any gap, large or small. By contrast,
+`price_onion_same_state` / `price_potato_same_state` (cross-commodity,
+same-date join) checked out correct against the actual same-day price, and
+the calendar/festival/weather columns are date-derived, not
+row-shifted, so they're unaffected.
+
+**This is likely the real reason a naive LightGBM would look weak against
+SARIMAX** -- lag/rolling features are exactly what LightGBM leans on most,
+and roughly a quarter of rows are imputed short gaps (plus a handful of
+long real gaps on top of that), so a meaningful share of training rows have
+corrupted lag inputs.
+
+**What I did about it (Phase 2 territory, not touching ingest):** rather
+than use the pre-built lag/rolling/EWMA/momentum columns, `models/lgbm_model.py`
+recomputes them itself, directly from `wholesale_price` + `date`, using the
+same date-based-join technique as `harness.make_supervised` (see
+`models/features.py`). Everything else (weather, festivals, calendar,
+cross-commodity, months_since_harvest) is taken from the parquet as-is.
+
+**Question for the team:** worth fixing at the source
+(`features/build.py`) once Phase 1 picks back up, so every future consumer
+of `modelling_frame.parquet` doesn't need to route around it the way I just
+did. Flagging rather than fixing there myself since that file is Phase 1 /
+ingest territory for this run.
+
+## 5. `months_since_harvest` granularity vs. spec
 
 CLAUDE.md's feature list asks for "days since last harvest." The committed
 column is `months_since_harvest` (integer, monthly granularity). Not fixing
