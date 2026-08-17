@@ -171,3 +171,36 @@ Not touching Phase 3/4 or ingest.
   highly persistent short-term -- there may just be less short-horizon
   predictability left for any model to add on that particular
   commodity/horizon combination.
+- Built `models/quantile_lgbm.py`: same pooled-across-series design and
+  feature set as `lgbm_model.py`, three `LGBMRegressor(objective="quantile",
+  alpha=...)` models per (origin, horizon) instead of one L2 model.
+  `quantile_median_predict` is a predict_fn-shaped wrapper (alpha=0.5) that
+  plugs into `harness.run_backtest` the same way every other model does;
+  `coverage_at_origin` separately reports the [P10, P90] band against the
+  actual, for calibration checking. Full 25-origin backtest: ~153s for the
+  three-alpha fits, plus the 80%-coverage pass reuses the same per-origin
+  cache so it added under a second.
+
+  Median (P50) MAPE roughly matches the point LGBM model (as it should --
+  same features, same pooling, different loss):
+
+  | commodity | h  | lgbm (L2) | lgbm_q50 |
+  |-----------|----|----------:|---------:|
+  | onion     | 7  | 14.5%     | 14.7%    |
+  | onion     | 14 | 14.1%     | 15.0%    |
+  | potato    | 7  | 10.0%     | 8.5%     |
+  | potato    | 14 | 10.5%     | 11.0%    |
+  | tur       | 7  | 5.3%      | 5.3%     |
+  | tur       | 14 | 4.4%      | 4.8%     |
+
+  80% prediction-interval coverage (fraction of actuals landing inside
+  [P10, P90] -- should be ~80% if well-calibrated): **71.3% at 7d, 74.1% at
+  14d** overall -- bands a bit too narrow. Breaks down unevenly by
+  commodity: potato (76.0%/81.8%) and tur (75.6%/74.1%) are close to
+  target, onion is the weak spot (63.1%/64.9%). Not fixing via conformal
+  calibration or similar -- that would drift toward "new architecture,"
+  which the run rules say not to do for this pass. Flagging the onion
+  under-coverage as a known limitation: the demo's "80% chance tur crosses
+  X" framing (CLAUDE.md's example sentence) is reasonably trustworthy for
+  tur/potato but the equivalent onion claim would currently overstate
+  confidence.

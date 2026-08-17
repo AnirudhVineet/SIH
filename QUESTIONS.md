@@ -109,7 +109,7 @@ of `modelling_frame.parquet` doesn't need to route around it the way I just
 did. Flagging rather than fixing there myself since that file is Phase 1 /
 ingest territory for this run.
 
-## 6. LightGBM beats SARIMAX on average, not on every commodity/horizon cell
+## 5. LightGBM beats SARIMAX on average, not on every commodity/horizon cell
 
 Full numbers and the three tuning variants I tried are in PROGRESS.md.
 Headline: macro-average MAPE across the 6 (commodity, horizon) cells is
@@ -136,7 +136,24 @@ persistent short-term, so there may genuinely be less predictability left
 on the table for any model on that specific commodity/horizon combination
 -- not every "loss" here is a fixable feature gap.
 
-## 5. `months_since_harvest` granularity vs. spec
+## 6. Quantile LightGBM's uncertainty band is under-calibrated for onion
+
+80% prediction-interval coverage should be ~80% by definition; measured
+across the full backtest it's 71.3% (7d) / 74.1% (14d) overall, and unevenly
+so -- potato and tur are close to target (75-82%), onion is well short
+(63.1%/64.9%). Numbers and how they were computed are in PROGRESS.md.
+
+**Impact:** CLAUDE.md's example driver sentence ("80% CI ₹164-₹179") is a
+reasonable claim to make for tur or potato forecasts today, but for onion
+it would currently overstate confidence -- the true band is narrower than
+80% coverage implies. Not attempting a fix (conformal calibration or
+similar) in this run since that edges toward "new architecture," which is
+explicitly off the table for this pass. Flagging so whoever wires the
+quantile output into the demo's "why panel" sentence knows to either
+widen onion's band with a calibration pass first, or hedge the confidence
+language for onion specifically.
+
+## 7. `months_since_harvest` granularity vs. spec
 
 CLAUDE.md's feature list asks for "days since last harvest." The committed
 column is `months_since_harvest` (integer, monthly granularity). Not fixing
