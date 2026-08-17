@@ -1,6 +1,6 @@
 {
   "as_of": "2025-11-05",
-  "generated_at": "2026-08-17T09:48:44",
+  "generated_at": "2026-08-17T11:31:54",
   "horizons": [
     7,
     14
@@ -12,9 +12,13 @@
   "spike_decision_threshold": 0.3,
   "conformal_calibration_window_days": 180,
   "stress_weights": {
-    "forecast": 0.45,
+    "forecast_level": 0.45,
     "spike": 0.35,
-    "uncertainty": 0.2
+    "band_width": 0.2
+  },
+  "stress_full_scale": {
+    "level_vs_1yr_median": 0.25,
+    "band_width_pct_of_price": 0.6
   },
   "n_centres": 10,
   "n_commodities": 3,

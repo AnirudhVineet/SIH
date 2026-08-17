@@ -21,6 +21,8 @@ import datetime as dt
 import json
 from pathlib import Path
 
+import sys
+
 import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
@@ -31,6 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "app" / "data"
 ASSETS = ROOT / "app" / "assets"
 MODELS = ROOT / "models"
+
+sys.path.insert(0, str(ROOT / "decide"))
+import optimizer as OPT  # noqa: E402
+import report as REPORT  # noqa: E402
 
 # The GeoJSON names Delhi "Delhi"; our price data calls the state "NCT of
 # Delhi". Every other state name matches exactly.
@@ -55,6 +61,7 @@ def load() -> dict:
         "drivers": pl.read_parquet(DATA / "shap_drivers.parquet"),
         "sentences": pl.read_parquet(DATA / "sentences.parquet"),
         "stress": pl.read_parquet(DATA / "stress.parquet"),
+        "stress_by_centre": pl.read_parquet(DATA / "stress_by_centre.parquet"),
         "history": pl.read_parquet(DATA / "history.parquet"),
         "meta": json.loads((DATA / "meta.json").read_text()),
         "backtest": pl.read_csv(MODELS / "backtest_results.csv"),
@@ -288,23 +295,28 @@ def screen_map() -> None:
 
     with st.expander("How the Price Stress Index is built"):
         w = META["stress_weights"]
+        fs = META["stress_full_scale"]
         st.markdown(
             f"""
-A weighted composite of three signals, each produced by a fitted model and
-scaled 0–1 before weighting:
+A weighted composite of three signals, each from a fitted model, each clipped
+to 0–1 before weighting:
 
 | Component | Weight | Source |
 |---|---|---|
-| Forecast pressure | {w['forecast']:.0%} | LightGBM 14-day forecast vs today's price; saturates at +10% |
+| Forecast level | {w['forecast_level']:.0%} | 14-day P50 forecast vs that centre's **own trailing 1-year median**; saturates at +{fs['level_vs_1yr_median']:.0%} |
 | Spike risk | {w['spike']:.0%} | Classifier probability of a >8% rise within 14 days |
-| Forecast uncertainty | {w['uncertainty']:.0%} | Conformal P10–P90 band width as a share of price; saturates at 60% |
+| Band width | {w['band_width']:.0%} | Conformal P10–P90 width as a share of price; saturates at {fs['band_width_pct_of_price']:.0%} |
 
-**What this index does not yet include.** CLAUDE.md's full Phase 4 index adds
-retail–wholesale spread widening, arrivals decline vs seasonal norm, and buffer
-stock cover ratio. None of the three can be computed from the data in this repo:
-retail prices are entirely null, no arrivals series exists in the source at all,
-and there is no stock-level feed. They are omitted rather than mocked, so this is
-an honest partial index — Phase 4 completes it.
+Measuring the forecast against each centre's **own** 1-year median, rather than
+against today's price, is what makes the score comparable across centres trading
+at very different levels — and it correctly flags a market that is easing but
+still far above its normal. Bhopal potato is the live example: forecast to fall
+12.7% yet still ~31% above its own 1-year median, so it scores High.
+
+**Not included.** CLAUDE.md's full index also wants retail–wholesale spread and
+buffer stock cover ratio; neither exists in this repo's data (retail is 100%
+null, no stock feed), and arrivals are absent from the source entirely. Omitted
+rather than mocked.
             """
         )
 
@@ -574,85 +586,205 @@ files). Every driver shown is real; the set is not complete.
 # --------------------------------------------------------------- 4. action
 
 
+def _pdf_export(plan) -> None:
+    """One-page officer brief. Built on demand so the PDF always matches the
+    slider position currently on screen."""
+    f = selected_forecast()
+    sentence_rows = D["sentences"].filter(
+        (pl.col("commodity") == commodity)
+        & (pl.col("centre") == centre)
+        & (pl.col("horizon") == horizon)
+    )["sentence"].to_list()
+
+    stress_rows = (
+        D["stress_by_centre"]
+        .filter(pl.col("commodity") == commodity)
+        .sort("stress", descending=True)
+        .select(["centre", "state", "stress", "band"])
+        .to_dicts()
+    )
+    spike_metrics = D["spike_sweep"].filter(
+        pl.col("decision_threshold") == META["spike_decision_threshold"]
+    ).to_dicts()[0]
+    accuracy = D["backtest"].filter(
+        (pl.col("commodity") == commodity) & (pl.col("horizon_days") == horizon)
+    ).to_dicts()
+
+    pdf = REPORT.build_brief(
+        commodity=commodity,
+        centre=centre,
+        horizon=horizon,
+        as_of=META["as_of"],
+        forecast=f or {},
+        sentence=sentence_rows[0] if sentence_rows else "No forecast available.",
+        stress_rows=stress_rows,
+        plan=plan,
+        spike_metrics=spike_metrics,
+        accuracy=accuracy[0] if accuracy else None,
+        input_labels=OPT.INPUT_LABELS,
+    )
+    st.download_button(
+        "Download one-page brief (PDF)",
+        data=pdf,
+        file_name=f"PSS01_brief_{commodity}_{centre}_{META['as_of']}.pdf",
+        mime="application/pdf",
+        type="primary",
+    )
+    st.caption(
+        "Reflects the current slider position. Input-provenance caveats are printed "
+        "on the page itself, so they travel with the document."
+    )
+
+
 def screen_action() -> None:
     st.markdown('<div class="hero-sub">Decision support</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hero">Recommended action</div>', unsafe_allow_html=True)
-    st.caption("Phase 4 — release optimiser, what-if simulator, PDF brief")
+    st.markdown('<div class="hero">Buffer stock release plan</div>', unsafe_allow_html=True)
+    st.caption(
+        f"{commodity.title()} · linear program over centres under stress · "
+        f"as of {META['as_of']}"
+    )
 
     st.markdown(
-        '<div class="caveat"><b>This screen is a deliberate placeholder.</b> '
-        "The release optimiser is Phase 4 and is not built yet. Rather than show a "
-        "mocked-up recommendation table that looks signable but is not backed by an "
-        "optimiser, this screen lists the real model inputs already available to feed "
-        "it, and states exactly what is still missing.</div>",
+        '<div class="caveat"><b>Read the input labels before quoting any tonnage.</b> '
+        "The objective is driven by real fitted-model output (stress, forecasts, spike "
+        "probability). Two constraint inputs are <b>labelled estimates, not sourced "
+        "figures</b>: absorption capacity is population-derived and transport cost is "
+        "distance-derived, because no capacity or freight feed exists in this repo. "
+        "Available stock is an operator input. This is a prioritisation aid, not a "
+        "procurement order.</div>",
         unsafe_allow_html=True,
     )
     st.write("")
 
-    left, right = st.columns(2)
+    stress_rows = (
+        D["stress_by_centre"]
+        .filter(pl.col("commodity") == commodity)
+        .select(["commodity", "centre", "state", "stress", "current_price", "p50"])
+        .to_dicts()
+    )
 
-    with left:
-        st.markdown("##### Ready — real model outputs available now")
-        ready = D["stress"].sort("stress", descending=True).head(6).with_columns(
-            band=pl.col("stress").map_elements(T.stress_band, return_dtype=pl.String)
+    ctrl, summary = st.columns([1, 2])
+    with ctrl:
+        stock = st.slider(
+            "Available buffer stock (tonnes)",
+            min_value=0,
+            max_value=200_000,
+            value=50_000,
+            step=5_000,
+            help=OPT.INPUT_LABELS["available_stock"],
         )
-        st.dataframe(
-            ready.select(
-                pl.col("state").alias("State"),
-                pl.col("commodity").str.to_titlecase().alias("Commodity"),
-                pl.col("stress").alias("Stress"),
-                pl.col("band").alias("Band"),
-                pl.col("pct_change").alias("14d fcst %"),
-            ).to_pandas(),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "14d fcst %": st.column_config.NumberColumn(format="%+.1f%%"),
-            },
+        transport_weight = st.slider(
+            "Transport cost weight (λ, stress-points)",
+            min_value=0.0,
+            max_value=40.0,
+            value=float(OPT.DEFAULT_TRANSPORT_WEIGHT),
+            step=2.0,
+            help="How many stress points the full haul to the furthest centre is "
+                 "worth giving up. 0 ignores distance entirely.",
         )
+
+    plan = OPT.optimise_release(stress_rows, stock, transport_weight)
+
+    with summary:
+        s1, s2, s3, s4 = st.columns(4)
+        s1.markdown(tile("Allocated", f"{plan.total_released:,.0f} t",
+                         f"of {stock:,} t available"), unsafe_allow_html=True)
+        s2.markdown(tile("Centres", f"{len(plan.rows)}",
+                         f"{plan.n_candidates} qualified (stress ≥ "
+                         f"{OPT.MIN_STRESS_TO_QUALIFY:.0f})"), unsafe_allow_html=True)
+        s3.markdown(tile("Transport cost", f"₹{plan.total_cost / 1e7:,.2f} cr",
+                         "distance-based estimate"), unsafe_allow_html=True)
+        s4.markdown(tile("Stress·tonnes", f"{plan.total_relief / 1e6:,.2f} M",
+                         "objective value delivered"), unsafe_allow_html=True)
+
+    st.write("")
+
+    if not plan.rows:
+        st.info(
+            f"No centre trading {commodity} currently scores at or above the "
+            f"{OPT.MIN_STRESS_TO_QUALIFY:.0f} stress threshold, so the optimiser "
+            "recommends holding stock. Releasing into a calm market displaces "
+            "normal trade for no benefit."
+        )
+        return
+
+    plan_df = pl.DataFrame(plan.rows)
+    st.markdown("##### Recommended allocation")
+    st.dataframe(
+        plan_df.select(
+            pl.col("centre").alias("Centre"),
+            pl.col("state").alias("State"),
+            pl.col("stress").alias("Stress"),
+            pl.col("release_tonnes").alias("Release (t)"),
+            pl.col("pct_of_capacity").alias("% of capacity"),
+            pl.col("distance_km").alias("Distance (km)"),
+            pl.col("transport_cost_inr").alias("Transport (₹)"),
+            pl.col("priority_score").alias("Priority"),
+        ).to_pandas(),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Release (t)": st.column_config.NumberColumn(format="%,.0f"),
+            "Transport (₹)": st.column_config.NumberColumn(format="%,.0f"),
+            "% of capacity": st.column_config.ProgressColumn(
+                "% of capacity", min_value=0, max_value=100, format="%.0f%%"
+            ),
+        },
+    )
+
+    fig = go.Figure(
+        go.Bar(
+            x=plan_df["release_tonnes"].to_list(),
+            y=plan_df["centre"].to_list(),
+            orientation="h",
+            marker=dict(color=T.ACCENT, line=dict(color=T.SURFACE, width=2)),
+            customdata=plan_df.select(["stress", "distance_km"]).to_numpy(),
+            hovertemplate=("%{y}<br>%{x:,.0f} t<br>stress %{customdata[0]:.0f}"
+                           "<br>%{customdata[1]:,.0f} km<extra></extra>"),
+        )
+    )
+    fig.update_xaxes(title_text="Recommended release (tonnes)")
+    fig.update_yaxes(autorange="reversed")
+    T.style_fig(fig, height=max(240, 60 * len(plan.rows)), legend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("The model, and exactly which inputs are estimates"):
         st.markdown(
-            """
-These feed the optimiser's objective directly:
+            f"""
+```
+maximise   Σ (stress_i − λ·cost_i/cost_max) · release_i
+subject to Σ release_i ≤ available_stock
+           0 ≤ release_i ≤ capacity_i
+```
 
-- forecast price path with calibrated P10/P50/P90 per centre
-- probability of a >8% spike within 14 days, per centre
-- median **7 days** of early warning before a spike episode begins
-- per-state stress ranking to prioritise candidate release locations
+Every tonne is worth its destination's stress score, discounted by how far it
+must travel; λ is in **stress-points** — how much relief you would forgo to
+avoid the longest haul in the set. The capacity cap is what stops everything
+landing in one market, so the LP fills the most stressed centres first up to
+what each can absorb.
+
+Where a state has two benchmark centres (Maharashtra: Mumbai and Nagpur) the
+state's absorption capacity is **split between them** — giving each the full
+state figure would let the LP spend that state's capacity twice.
+
+| Input | Where it comes from | Real or estimate? |
+|---|---|---|
+| `stress_i` | Fitted forecast + conformal band + spike classifier | **Real model output** |
+| `available_stock` | {OPT.INPUT_LABELS['available_stock']} | **Operator input** |
+| `capacity_i` | {OPT.INPUT_LABELS['capacity']} | **Estimate** |
+| `cost_i` | {OPT.INPUT_LABELS['transport']} | **Estimate** (distance is real, the rate and single-depot assumption are not) |
+
+Centres scoring below {OPT.MIN_STRESS_TO_QUALIFY:.0f} are excluded outright.
+Solver status: `{plan.status}`.
+
+To make this a procurement-grade tool, three feeds are needed: NAFED/NCCF stock
+positions, real state absorption capacity, and tendered freight rates.
             """
         )
 
-    with right:
-        st.markdown("##### Blocked — inputs that do not exist yet")
-        st.markdown(
-            """
-The LP in CLAUDE.md Phase 4 is
-
-```
-minimize  Σ (price deviation from target)
-          + λ · transport cost
-s.t.      Σ release_i ≤ available_stock
-          0 ≤ release_i
-            ≤ state_absorption_capacity_i
-```
-
-Three of its inputs have no data source in this repo:
-
-| Input | Status |
-|---|---|
-| `available_stock` | No NAFED/NCCF buffer stock feed ingested |
-| `state_absorption_capacity_i` | No capacity reference data |
-| transport cost matrix | Not sourced |
-
-Two further Phase 4 signals are also unavailable and are the reason the stress
-index on screen 1 is a partial composite: **retail–wholesale spread** (retail
-prices are 100% null in the pipeline) and **arrivals decline vs seasonal norm**
-(no arrivals series exists in the source at all).
-
-Wiring any of these is a Phase 1 ingest task. Until then a release
-recommendation would be a guess wearing a table's clothing, which is precisely
-what a decision-support tool for a ₹10,000 crore fund should not do.
-            """
-        )
+    st.divider()
+    st.markdown("##### Export")
+    _pdf_export(plan)
 
     st.divider()
     st.markdown("##### Backtested spike early-warning performance")

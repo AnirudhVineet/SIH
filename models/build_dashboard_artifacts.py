@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 
 import lightgbm as lgb
 import numpy as np
@@ -37,6 +38,9 @@ import quantile_lgbm as q
 import spike_classifier as sc
 from features import CATEGORICAL_COLUMNS, MODEL_COLUMNS, build_features, to_model_frame
 
+sys.path.insert(0, str(h.ROOT / "decide"))
+import stress as stress_mod  # noqa: E402
+
 OUT_DIR = h.ROOT / "app" / "data"
 HISTORY_DAYS = 400  # how much history the commodity chart shows
 TOP_DRIVERS = 6
@@ -47,19 +51,7 @@ TOP_DRIVERS = 6
 # observation within this lookback, and the app shows how stale that is.
 STALENESS_LOOKBACK_DAYS = 45
 
-# Stress index weights. Deliberately only over signals we can actually
-# compute from real data today -- see the note in build_stress() about what
-# the full Phase 4 index is meant to add.
-W_FORECAST, W_SPIKE, W_UNCERTAINTY = 0.45, 0.35, 0.20
-# Full-scale points, i.e. where a component saturates at 1.0. Both are set
-# against the observed distribution of the real forecasts so the index
-# actually discriminates between states -- an earlier 30% uncertainty scale
-# pinned every single series at 1.0 and contributed no signal at all.
-# A +10% wholesale move inside a fortnight is a genuinely policy-relevant
-# jump, so that anchors the forecast component; observed band widths run
-# ~9-75% of price (median ~39%), so 60% anchors the uncertainty component.
-FORECAST_FULL_SCALE = 0.10
-UNCERTAINTY_FULL_SCALE = 0.60
+# Stress index weights and scales now live in decide/stress.py.
 
 # Human-readable phrasing for the driver sentence. Anything not listed
 # falls back to a cleaned-up version of the raw column name.
@@ -404,49 +396,36 @@ def build_spike_probabilities(frame: pl.DataFrame, origin: dt.date) -> pl.DataFr
     return today.select(["commodity", "centre"]).with_columns(spike_proba=pl.Series(proba))
 
 
-def build_stress(forecasts: pl.DataFrame, states: pl.DataFrame) -> pl.DataFrame:
-    """Price Stress Index, 0-100, per (state, commodity).
+def build_stress(
+    forecasts: pl.DataFrame, frame: pl.DataFrame, origin: dt.date
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Price Stress Index per (commodity, centre), plus a state-level roll-up
+    for the map. Scoring lives in decide/stress.py -- see that module for the
+    component definitions and weights.
 
-    INTERIM Phase 3 version. CLAUDE.md's full Phase 4 index is a composite of
-    five signals; three of them cannot be computed from the data actually in
-    this repo today:
-      * retail-wholesale spread widening -- retail_price is 100% null
-        (QUESTIONS.md #2), so there is no spread to measure;
-      * arrivals decline vs seasonal norm -- no arrivals data exists at all
-        (QUESTIONS.md #1, confirmed absent from the raw files);
-      * buffer stock cover ratio -- no stock-level data source in the repo.
-    Inventing any of those would be mock data, so this index uses only the
-    three signals backed by real fitted models, and the app says so on screen.
+    Only three of CLAUDE.md's five Phase 4 signals are computable from the
+    data in this repo: retail-wholesale spread needs retail prices (100%
+    null), arrivals decline needs an arrivals series (absent from the source
+    entirely, verified against all 12 raw yearly files), and stock cover ratio
+    needs a stock feed. Those three are omitted rather than mocked.
     """
-    scored = forecasts.filter(pl.col("horizon") == 14).with_columns(
-        forecast_component=(pl.col("pct_change") / 100 / FORECAST_FULL_SCALE).clip(0, 1),
-        spike_component=pl.col("spike_proba").fill_null(0).clip(0, 1),
-        uncertainty_component=(
-            pl.col("band_width_pct") / 100 / UNCERTAINTY_FULL_SCALE
-        ).clip(0, 1),
-    )
-    scored = scored.with_columns(
-        stress=(
-            W_FORECAST * pl.col("forecast_component")
-            + W_SPIKE * pl.col("spike_component")
-            + W_UNCERTAINTY * pl.col("uncertainty_component")
-        )
-        * 100
-    )
+    medians = stress_mod.trailing_median(frame, origin)
+    per_centre = stress_mod.score(forecasts.filter(pl.col("horizon") == 14), medians)
+    per_centre = stress_mod.add_band(per_centre)
 
-    with_state = scored.join(states, on="centre", how="left")
-    return (
-        with_state.group_by(["state", "commodity"])
+    by_state = (
+        per_centre.group_by(["state", "commodity"])
         .agg(
             stress=pl.col("stress").mean().round(1),
-            forecast_component=pl.col("forecast_component").mean().round(3),
+            level_component=pl.col("level_component").mean().round(3),
             spike_component=pl.col("spike_component").mean().round(3),
-            uncertainty_component=pl.col("uncertainty_component").mean().round(3),
+            band_component=pl.col("band_component").mean().round(3),
             pct_change=pl.col("pct_change").mean().round(2),
             n_centres=pl.len(),
         )
         .sort(["state", "commodity"])
     )
+    return per_centre, by_state
 
 
 def main() -> None:
@@ -472,8 +451,11 @@ def main() -> None:
     )
     forecasts = forecasts.join(states, on="centre", how="left")
 
-    stress = build_stress(forecasts, states)
-    print(f"  stress index: {stress.height} (state, commodity) rows")
+    stress_by_centre, stress = build_stress(forecasts, frame, origin)
+    print(
+        f"  stress index: {stress_by_centre.height} (commodity, centre) rows"
+        f" -> {stress.height} (state, commodity) rows"
+    )
 
     history = frame.filter(
         pl.col("date") > origin - dt.timedelta(days=HISTORY_DAYS)
@@ -486,6 +468,7 @@ def main() -> None:
     drivers.write_parquet(OUT_DIR / "shap_drivers.parquet")
     sentences.write_parquet(OUT_DIR / "sentences.parquet")
     stress.write_parquet(OUT_DIR / "stress.parquet")
+    stress_by_centre.write_parquet(OUT_DIR / "stress_by_centre.parquet")
     history.write_parquet(OUT_DIR / "history.parquet")
 
     meta = {
@@ -499,9 +482,13 @@ def main() -> None:
         "spike_decision_threshold": sc.DECISION_THRESHOLD,
         "conformal_calibration_window_days": q.CALIBRATION_WINDOW_DAYS,
         "stress_weights": {
-            "forecast": W_FORECAST,
-            "spike": W_SPIKE,
-            "uncertainty": W_UNCERTAINTY,
+            "forecast_level": stress_mod.W_LEVEL,
+            "spike": stress_mod.W_SPIKE,
+            "band_width": stress_mod.W_BAND,
+        },
+        "stress_full_scale": {
+            "level_vs_1yr_median": stress_mod.LEVEL_FULL_SCALE,
+            "band_width_pct_of_price": stress_mod.BAND_FULL_SCALE,
         },
         "n_centres": int(frame["centre"].n_unique()),
         "n_commodities": int(frame["commodity"].n_unique()),
