@@ -79,3 +79,39 @@ Not touching Phase 3/4 or ingest.
   25 origins) -- coverage loss is expected and correct: it comes from
   requiring a real (non-imputed) actual at the target date and a real row
   at the origin date, which real reporting gaps sometimes fail.
+- Built `models/sarimax_model.py`: order (1,1,1), no seasonal term, fit per
+  (commodity, centre) on full history up to each origin, reindexed to daily
+  frequency (`asfreq('D')`) so a "14 steps ahead" forecast always lands on
+  origin+14 calendar days regardless of gaps -- statsmodels' state-space
+  SARIMAX handles the resulting NaNs natively via the Kalman filter, no
+  extra imputation needed. Forecasts for both horizons come from one fit
+  per (origin, series), cached across the two `predict_fn` calls the
+  harness makes per origin (one per horizon) so nothing gets refit.
+  Timing: ~0.1-0.2s/fit, full 25-origin x 30-series backtest runs in
+  ~175s -- no need for the joblib parallelism I'd planned for.
+  **Hit and fixed a real numerical bug**: potato/Kurnool at origin
+  2025-09-12 produced a forecast of -3.8e26. Root cause: `ar.L1 = 1.041`
+  (an explosive, non-stationary AR root -- `enforce_stationarity=False` is
+  needed for fast/robust fitting across 750 fits but doesn't prevent this),
+  compounded by 49% NaN in that series' reindexed window, and
+  statsmodels reported `ConvergenceWarning: Maximum Likelihood optimization
+  failed to converge`. Fixed by checking `res.mle_retvals['converged']` and,
+  as a backstop (convergence flags aren't always reliable), rejecting any
+  forecast that goes negative or exceeds 8x the trailing-30-day observed
+  price level -- a 14-day-ahead commodity price forecast has no business
+  doing either. Failed fits return None and that series/origin/horizon
+  drops out of evaluation (same as any other missing-data case). Re-ran
+  after the fix -- all commodities now report sane MAPEs:
+
+  | commodity | h  | sarimax MAPE |
+  |-----------|----|-------------:|
+  | onion     | 7  | 13.4%        |
+  | onion     | 14 | 14.1%        |
+  | potato    | 7  | 11.8%        |
+  | potato    | 14 | 12.9%        |
+  | tur       | 7  | 4.7%         |
+  | tur       | 14 | 4.3%         |
+
+  Roughly ties naive on onion/tur, clearly beats naive on potato -- a
+  believable benchmark, not sandbagged, which is what LightGBM needs to
+  visibly beat.
